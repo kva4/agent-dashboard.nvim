@@ -22,7 +22,7 @@ See the project README for lazy.nvim setup and Claude/OpenCode reporter setup.
 
     require("agent_dashboard").setup({
       tmux = true,
-      recent_limit = 5,
+      recent_limit = 10,
       notifications = { enabled = true, macos = false },
     })
 
@@ -50,8 +50,8 @@ In a visual-mode Lua mapping, call send_context() directly to use the active
 selection rather than the previous visual marks.
 
 In the sidebar, |j| and |k| move between rows, |Enter| opens a slot or recent
-session, |a| adds a slot, |x| removes one, |?| opens key help, and |q| hides the
-dashboard.
+session, |a| adds a slot, |x| removes one, |y| copies the session id of the
+row, |?| opens key help, and |q| hides the dashboard.
 
 ===============================================================================
 3. LUA API                                                  *agent-dashboard-api*

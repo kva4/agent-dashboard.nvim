@@ -192,7 +192,7 @@ end
 
 function M.refresh(cwd, callback, opts)
     opts = opts or {}
-    local limit = opts.recent_limit or 5
+    local limit = opts.recent_limit or 10
     local claude = claude_sessions(cwd, limit, opts.claude_projects)
     if vim.fn.executable("opencode") == 0 then callback(merge({}, claude, limit)); return end
 

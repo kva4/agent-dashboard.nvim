@@ -13,7 +13,7 @@ local next_id = 100
 local selected, list_buf, list_win, terminal_win, origin_win, timer, state_dir
 local changing = false
 local config = {
-    recent_limit = 5,
+    recent_limit = 10,
     height = 0.78,
     tmux = true,
     notifications = { enabled = true, macos = false },
@@ -512,6 +512,7 @@ local function show_help()
         "  Enter       Open selected slot or session",
         "  1-9         Open a slot (create the next slot)",
         "  a / x       Add / remove a slot",
+        "  y           Copy the session id of the row",
         "  ?           Show this help",
         "  q / Esc     Hide the dashboard", "", "Agent terminal",
         "  " .. (config.keys.list or "") .. "       Focus the sidebar",
@@ -561,8 +562,22 @@ local function remove_slot()
     M.focus_list()
 end
 
+local function copy_session_id()
+    local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
+    local session_id = row and (row.session and row.session.id
+        or row.slot and states[row.slot] and states[row.slot].session)
+    if type(session_id) ~= "string" or session_id == "none" or session_id == "unknown" then
+        vim.notify("No session id on this row", vim.log.levels.INFO)
+        return
+    end
+    vim.fn.setreg("+", session_id)
+    vim.fn.setreg('"', session_id)
+    vim.notify("Copied session id " .. session_id, vim.log.levels.INFO)
+end
+
 local function list_keymaps()
     local opts = { buffer = list_buf, silent = true }
+    vim.keymap.set("n", "y", copy_session_id, opts)
     vim.keymap.set("n", "q", hide, opts)
     vim.keymap.set("n", "<Esc>", hide, opts)
     vim.keymap.set("n", "a", add_slot, opts)

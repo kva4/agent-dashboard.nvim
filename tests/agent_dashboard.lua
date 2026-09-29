@@ -25,7 +25,8 @@ vim.fn.executable = function(name)
     return executable(name)
 end
 vim.fn.jobstart = function(args, opts)
-    assert(vim.deep_equal(args, { "opencode", "session", "list", "--format", "json", "--max-count", "10" }))
+    assert(vim.deep_equal(vim.list_slice(args, 1, 6), { "opencode", "session", "list", "--format", "json", "--max-count" }))
+    assert(args[7] == "10" or args[7] == "20")
     local request_cwd = opts.cwd
     vim.schedule(function()
         local entries = request_cwd == cwd and {
@@ -278,6 +279,8 @@ end
 vim.api.nvim_win_set_cursor(0, { 6, 0 })
 vim.api.nvim_feedkeys("x", "xt", false)
 assert(vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]:find("1 terminal", 1, true))
+vim.api.nvim_feedkeys("y", "xt", false)
+assert(vim.fn.getreg('"') == "ses_recent")
 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
 assert(vim.wait(1000, function() return sent ~= nil end))
 assert(sent == "opencode --session 'ses_recent'\n")
