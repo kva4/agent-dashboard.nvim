@@ -501,8 +501,6 @@ function M.hooks()
         } } },
         SessionEnd = { { hooks = { { type = "command", command = command .. " end" } } } },
     } }
-    -- vim.json.encode only accepts options on Neovim 0.11+.
-    if vim.fn.has("nvim-0.11") == 1 then return vim.json.encode(hooks, { indent = true }) end
     return vim.json.encode(hooks)
 end
 

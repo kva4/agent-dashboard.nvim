@@ -187,6 +187,11 @@ package.loaded["agent_dashboard.sessions"] = {
 }
 local dashboard = require("agent_dashboard")
 dashboard.setup({ tmux = false, keys = { next = "<M-n>" } })
+local original_executable = vim.fn.executable
+vim.fn.executable = function(name)
+    if name == "claude" or name == "opencode" then return 1 end
+    return original_executable(name)
+end
 local has_version, termopen = vim.fn.has, vim.fn.termopen
 local fallback_terminal_called = false
 vim.fn.has = function(feature)
@@ -285,11 +290,6 @@ dashboard.focus_list()
 assert(vim.api.nvim_buf_get_lines(buf, 3, 4, false)[1]:find("2 terminal", 1, true))
 vim.api.nvim_feedkeys("jj", "xt", false)
 assert(vim.api.nvim_win_get_cursor(0)[1] == 8)
-local original_executable = vim.fn.executable
-vim.fn.executable = function(name)
-    if name == "claude" then return 1 end
-    return original_executable(name)
-end
 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
 assert(sent == "claude --resume '" .. uuid .. "'\n")
 assert(vim.api.nvim_get_current_buf() == second_buf)
