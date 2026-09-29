@@ -6,6 +6,11 @@ Claude Code by last activity. Resume a session in an unused terminal (or a new
 slot if all are occupied), switch slots without stopping their jobs, and see an
 optional status badge in tmux.
 
+![agent-dashboard.nvim demo](assets/demo.gif)
+
+*The agents in this recording are simulated. The dashboard, status reporting,
+and session resume are the real plugin. See `assets/demo/`.*
+
 ## Why it exists
 
 When several AI agents run at once, it's hard to tell which one needs you. One
