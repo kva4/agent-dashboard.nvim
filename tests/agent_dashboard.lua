@@ -159,10 +159,16 @@ vim.fn.expand = function(path)
 end
 local health_win, original_buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
 vim.cmd("checkhealth agent_dashboard")
-local health_output = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
-assert(not health_output:find('No healthcheck found for "agent_dashboard"', 1, true))
-assert(health_output:find("permission_prompt", 1, true))
-assert(health_output:find("OpenCode TUI reporter is configured", 1, true))
+local function health_output()
+    return table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n")
+end
+local report = ""
+assert(vim.wait(5000, function()
+    report = health_output()
+    return report:find("permission_prompt", 1, true)
+        and report:find("OpenCode TUI reporter is configured", 1, true)
+end), report)
+assert(not report:find('No healthcheck found for "agent_dashboard"', 1, true))
 for _, win in ipairs(vim.api.nvim_list_wins()) do
     if win ~= health_win then vim.api.nvim_win_close(win, true) end
 end
