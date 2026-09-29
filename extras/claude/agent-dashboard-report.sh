@@ -17,11 +17,34 @@ fi
 
 input="$(cat 2>/dev/null || true)"
 session="$(printf '%s' "$input" | jq -r '.session_id // "unknown"' 2>/dev/null || echo unknown)"
+source="$(printf '%s' "$input" | jq -r '.source // "startup"' 2>/dev/null || echo startup)"
+
+# Hook commands can be launched through one or more shell wrappers. Attribute
+# the report to Claude itself so Neovim does not mistake the short-lived hook
+# process for the owner of the slot.
+claude_pid=0
+pid="$PPID"
+while [ "$pid" -gt 1 ] 2>/dev/null; do
+    parent="$(ps -o ppid= -o comm= -p "$pid" 2>/dev/null || true)"
+    [ -n "$parent" ] || break
+    read -r parent_pid process_name <<< "$parent"
+    process_name="${process_name##*/}"
+    case "$process_name" in
+        claude|claude-code) claude_pid="$pid"; break ;;
+    esac
+    [ -n "${parent_pid:-}" ] || break
+    pid="$parent_pid"
+done
 
 case "$action" in
     start)
-        echo 0 > "$turn_file"
-        turn=0
+        previous_session="$(jq -r '.session // empty' "$state_file" 2>/dev/null || true)"
+        if [ "$source" = "startup" ] || [ "$source" = "clear" ] || [ "$previous_session" != "$session" ]; then
+            echo 0 > "$turn_file"
+            turn=0
+        else
+            turn="$(cat "$turn_file" 2>/dev/null || echo 0)"
+        fi
         state=idle
         ;;
     idle)
@@ -44,8 +67,9 @@ jq -n \
     --arg agent claude \
     --arg session "$session" \
     --argjson turn "$turn" \
+    --argjson pid "$claude_pid" \
     --arg state "$state" \
     --argjson time "$(date +%s)" \
-    '{slot: $slot, time: $time, session: $session, turn: $turn, state: $state, agent: $agent}' \
+    '{slot: $slot, time: $time, session: $session, turn: $turn, state: $state, agent: $agent} + (if $pid > 1 then {pid: $pid} else {} end)' \
     > "$tmp"
 mv "$tmp" "$state_file"

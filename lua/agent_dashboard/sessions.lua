@@ -1,23 +1,57 @@
 local M = {}
+local title_cache = {}
+local project_cache = {}
 
-local function first_prompt(path)
+local function read_range(path, offset, length)
     local fd = vim.uv.fs_open(path, "r", 0)
     if not fd then return nil end
-    local data = vim.uv.fs_read(fd, 32768, 0)
+    local data = vim.uv.fs_read(fd, length, offset)
     vim.uv.fs_close(fd)
-    for line in (data or ""):gmatch("([^\n]+)\n") do
-        local ok, record = pcall(vim.json.decode, line)
-        if ok and type(record) == "table" and record.type == "user"
-            and type(record.message) == "table" then
-            local content = record.message.content
-            if type(content) == "table" then
-                for _, part in ipairs(content) do
-                    if type(part) == "table" and part.type == "text" then content = part.text; break end
+    return data
+end
+
+local function title_for(path, info)
+    local key = table.concat({ info.size or 0, info.mtime.sec or 0, info.mtime.nsec or 0 }, ":")
+    local cached = title_cache[path]
+    if cached and cached.key == key then return cached.title end
+
+    local size = info.size or 0
+    local first = read_range(path, 0, math.min(size, 32768)) or ""
+    local last = size > 32768 and (read_range(path, math.max(0, size - 32768), 32768) or "") or ""
+    local custom_title, ai_title, prompt
+    local function inspect(data)
+        for line in data:gmatch("([^\n]+)") do
+            local ok, record = pcall(vim.json.decode, line)
+            if ok and type(record) == "table" then
+                if record.type == "custom-title" then
+                    custom_title = record.customTitle or record.title or record.name
+                elseif record.type == "ai-title" then
+                    ai_title = record.aiTitle or record.title
+                elseif not prompt and record.type == "user" and type(record.message) == "table" then
+                    local content = record.message.content
+                    if type(content) == "table" then
+                        for _, part in ipairs(content) do
+                            if type(part) == "table" and part.type == "text" then
+                                content = part.text
+                                break
+                            end
+                        end
+                    end
+                    if type(content) == "string" then
+                        content = content:gsub("^%s+", "")
+                        if content:match("%S") and content:sub(1, 1) ~= "<" then prompt = content end
+                    end
                 end
             end
-            if type(content) == "string" and content:match("%S") then return content end
         end
     end
+    inspect(first)
+    if last ~= "" and last ~= first then inspect(last) end
+    local title = type(custom_title) == "string" and custom_title ~= "" and custom_title
+        or type(ai_title) == "string" and ai_title ~= "" and ai_title
+        or prompt
+    title_cache[path] = { key = key, title = title }
+    return title
 end
 
 local function read_index(path)
@@ -28,36 +62,98 @@ local function read_index(path)
     return ok and type(index) == "table" and index or nil
 end
 
-local function claude_sessions(cwd, limit, projects_dir)
-    local root = projects_dir or vim.fn.expand("~/.claude/projects")
-    local dir = root .. "/" .. cwd:gsub("[^%w%-]", "-")
-    local stat = vim.uv.fs_stat(dir)
-    local index = stat and stat.type == "directory" and read_index(dir .. "/sessions-index.json")
-    if not stat or stat.type ~= "directory" or (index and index.originalPath and index.originalPath ~= cwd) then
-        -- Older/newer Claude versions can encode project paths differently.
+local function directory_matches_cwd(dir, cwd)
+    local files = vim.uv.fs_scandir(dir)
+    if not files then return false end
+    local checked = 0
+    while true do
+        local file, kind = vim.uv.fs_scandir_next(files)
+        if not file then break end
+        if kind == "file" and file:match("%.jsonl$") then
+            checked = checked + 1
+            local data = read_range(dir .. "/" .. file, 0, 32768) or ""
+            for line in data:gmatch("([^\n]+)") do
+                local ok, record = pcall(vim.json.decode, line)
+                if ok and type(record) == "table" and record.cwd == cwd then return true end
+            end
+            if checked >= 8 then break end
+        end
+    end
+    return false
+end
+
+local function path_stamp(path)
+    local stat = path and vim.uv.fs_stat(path)
+    if not stat then return "missing" end
+    return table.concat({ stat.mtime.sec or 0, stat.mtime.nsec or 0 }, ":")
+end
+
+local function project_stamp(root, cwd, cached_dir)
+    local expected = root .. "/" .. cwd:gsub("[^%w%-]", "-")
+    return table.concat({ path_stamp(root), path_stamp(expected), path_stamp(cached_dir) }, "|")
+end
+
+local function find_project_dir(root, cwd)
+    local root_cache = project_cache[root]
+    local cached = root_cache and root_cache[cwd]
+    local stamp = project_stamp(root, cwd, cached and cached.dir or nil)
+    if cached and cached.stamp == stamp then
+        local dir = cached.dir or nil
+        return dir, dir and read_index(dir .. "/sessions-index.json") or nil
+    end
+
+    local expected = root .. "/" .. cwd:gsub("[^%w%-]", "-")
+    local stat = vim.uv.fs_stat(expected)
+    local dir, index
+    if stat and stat.type == "directory" then
+        index = read_index(expected .. "/sessions-index.json")
+        if index and (not index.originalPath or index.originalPath == cwd) then
+            dir = expected
+        elseif not index and directory_matches_cwd(expected, cwd) then
+            dir = expected
+        end
+    end
+
+    if not dir then
         local scan = vim.uv.fs_scandir(root)
-        if not scan then return {} end
-        dir = nil
-        while true do
-            local name, kind = vim.uv.fs_scandir_next(scan)
-            if not name then break end
-            if kind == "directory" then
-                local candidate = root .. "/" .. name
-                local candidate_index = read_index(candidate .. "/sessions-index.json")
-                if candidate_index and candidate_index.originalPath == cwd then
-                    dir, index = candidate, candidate_index
-                    break
+        if scan then
+            while true do
+                local name, kind = vim.uv.fs_scandir_next(scan)
+                if not name then break end
+                if kind == "directory" then
+                    local candidate = root .. "/" .. name
+                    local candidate_index = read_index(candidate .. "/sessions-index.json")
+                    if (candidate_index and candidate_index.originalPath == cwd)
+                        or directory_matches_cwd(candidate, cwd) then
+                        dir, index = candidate, candidate_index
+                        break
+                    end
                 end
             end
         end
     end
+
+    root_cache = root_cache or {}
+    project_cache[root] = root_cache
+    root_cache[cwd] = { stamp = project_stamp(root, cwd, dir), dir = dir or false }
+    return dir, index
+end
+
+local function claude_sessions(cwd, limit, projects_dir)
+    local root = projects_dir or vim.fn.expand("~/.claude/projects")
+    local dir, index = find_project_dir(root, cwd)
     if not dir then return {} end
 
     local titles = {}
     for _, entry in ipairs(index and type(index.entries) == "table" and index.entries or {}) do
         if type(entry) == "table" and (not entry.projectPath or entry.projectPath == cwd)
             and type(entry.sessionId) == "string" then
-            titles[entry.sessionId] = entry.firstPrompt
+            local title = entry.customTitle or entry.aiTitle or entry.title
+            if not title and type(entry.firstPrompt) == "string" then
+                local prompt = entry.firstPrompt:gsub("^%s+", "")
+                if prompt:sub(1, 1) ~= "<" then title = prompt end
+            end
+            titles[entry.sessionId] = title
         end
     end
     local sessions = {}
@@ -73,7 +169,7 @@ local function claude_sessions(cwd, limit, projects_dir)
             if info then
                 sessions[#sessions + 1] = {
                     harness = "claude", id = id, title = titles[id],
-                    updated = info.mtime.sec * 1000, path = path,
+                    updated = info.mtime.sec * 1000, path = path, info = info,
                 }
             end
         end
@@ -81,10 +177,8 @@ local function claude_sessions(cwd, limit, projects_dir)
     table.sort(sessions, function(a, b) return a.updated > b.updated end)
     while #sessions > limit do table.remove(sessions) end
     for _, session in ipairs(sessions) do
-        if type(session.title) ~= "string" or session.title == "" then
-            session.title = first_prompt(session.path)
-        end
-        session.path = nil
+        session.title = title_for(session.path, session.info) or session.title
+        session.path, session.info = nil, nil
     end
     return sessions
 end

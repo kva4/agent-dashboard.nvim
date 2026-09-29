@@ -1,0 +1,28 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  neovim:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [v0.10.4, stable, nightly]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rhysd/action-setup-vim@v1
+        with:
+          neovim: true
+          version: ${{ matrix.version }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install reporter dependency
+        run: sudo apt-get update && sudo apt-get install -y jq
+      - name: Run Neovim tests
+        run: nvim --headless -u NONE -i NONE -l tests/agent_dashboard.lua
+      - name: Check reporter syntax
+        run: bash -n extras/claude/agent-dashboard-report.sh && node --check extras/opencode/agent-dashboard-tui.js

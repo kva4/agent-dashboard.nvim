@@ -19,7 +19,10 @@ function reporter() {
   function write(state, session, turn, force = false) {
     if (!active) return;
     if (!force && current?.state === state && current.session === session && current.turn === turn) return;
-    current = { slot, state, session, turn, time: Math.floor(Date.now() / 1000), owner };
+    current = {
+      slot, state, session, turn, time: Math.floor(Date.now() / 1000),
+      pid: process.pid, heartbeat: true, owner,
+    };
     chain = chain.then(async () => {
       if (!current) return;
       const data = { ...current, time: Math.floor(Date.now() / 1000) };

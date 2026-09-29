@@ -16,6 +16,7 @@ local config = {
     recent_limit = 5,
     height = 0.78,
     tmux = true,
+    notifications = { enabled = true, macos = false },
     keys = { list = "<C-h>", next = "<M-j>", previous = "<M-k>", hide = "<C-q>", escape = "jk" },
 }
 
@@ -97,6 +98,32 @@ local function terminal_config()
     }
 end
 
+local function process_alive(pid)
+    if type(pid) ~= "number" or pid <= 0 then return true end
+    local ok, result = pcall(vim.uv.kill, pid, 0)
+    return ok and result ~= nil and result ~= false
+end
+
+local function report_stale(report)
+    return report.heartbeat == true and math.abs(os.time() - report.time) > 10
+end
+
+local function slot_owns_report(term, pid)
+    if type(pid) ~= "number" or not vim.api.nvim_get_proc then return true end
+    local ok, shell_pid = pcall(vim.fn.jobpid, term.job_id)
+    if not ok or type(shell_pid) ~= "number" or shell_pid <= 0 then return true end
+    local current = pid
+    for _ = 1, 10 do
+        if current == shell_pid then return true end
+        local got_proc, process = pcall(vim.api.nvim_get_proc, current)
+        if not got_proc or type(process) ~= "table" or type(process.ppid) ~= "number" then return true end
+        if process.ppid == shell_pid then return true end
+        if process.ppid <= 1 then return false end
+        current = process.ppid
+    end
+    return false
+end
+
 local function status(id)
     local term = terminals[id]
     if not term or not term.bufnr or not vim.api.nvim_buf_is_valid(term.bufnr) then return "empty" end
@@ -104,6 +131,8 @@ local function status(id)
     local entry = states[id]
     if not entry then return "shell" end
     if entry.stale then return "unknown" end
+    -- A running agent with no session selected (e.g. the OpenCode home screen) is idle, not unknown.
+    if entry.session == "none" then return "idle" end
     if entry.state == "idle" and not entry.seen then return "done" end
     return entry.state
 end
@@ -116,14 +145,17 @@ local status_symbols = {
     unknown = "?",
 }
 
-local function render()
+local function badge()
     local present = {}
     for _, id in ipairs(slots) do present[status(id)] = true end
-    local badge = ""
     for _, state in ipairs({ "blocked", "working", "unknown", "idle", "done" }) do
-        if present[state] then badge = status_symbols[state]; break end
+        if present[state] then return status_symbols[state] end
     end
-    tmux.publish(badge)
+    return ""
+end
+
+local function render()
+    tmux.publish(badge())
     if valid(terminal_win) then
         vim.api.nvim_win_set_config(terminal_win, {
             title = terminal_title(vim.api.nvim_win_get_width(terminal_win)), title_pos = "center",
@@ -162,23 +194,31 @@ local function render()
     end
     lines[#lines + 1] = " " .. string.rep("─", vim.api.nvim_win_get_width(list_win) - 2)
     local divider_row = #lines - 1
-    lines[#lines + 1] = " a add   x remove"
-    lines[#lines + 1] = " Enter open q close"
+    lines[#lines + 1] = " a add   x remove   ? help"
+    lines[#lines + 1] = " Enter open   q close"
 
     vim.bo[list_buf].modifiable = true
     vim.api.nvim_buf_set_lines(list_buf, 0, -1, false, lines)
     vim.bo[list_buf].modifiable = false
     vim.api.nvim_buf_clear_namespace(list_buf, M.ns, 0, -1)
-    vim.api.nvim_buf_add_highlight(list_buf, M.ns, "Title", 0, 0, -1)
-    vim.api.nvim_buf_add_highlight(list_buf, M.ns, "Visual", selected_index() + 1, 0, -1)
-    vim.api.nvim_buf_add_highlight(list_buf, M.ns, "Title", #slots + 3, 0, -1)
-    vim.api.nvim_buf_add_highlight(list_buf, M.ns, "Comment", divider_row, 0, -1)
+    local function highlight(row, group, start_col, end_col)
+        vim.api.nvim_buf_set_extmark(list_buf, M.ns, row, start_col or 0, {
+            end_col = end_col or #lines[row + 1], hl_group = group,
+        })
+    end
+    highlight(0, "AgentDashboardTitle")
+    highlight(selected_index() + 1, "Visual")
+    highlight(#slots + 3, "AgentDashboardTitle")
+    highlight(divider_row, "Comment")
     for index, id in ipairs(slots) do
-        local group = ({ blocked = "DiagnosticError", done = "DiagnosticWarn", working = "DiagnosticInfo" })[status(id)]
+        local group = ({
+            blocked = "AgentDashboardBlocked", done = "AgentDashboardDone",
+            working = "AgentDashboardWorking", unknown = "AgentDashboardUnknown",
+        })[status(id)]
         if group then
             local symbol = status_symbols[status(id)]
             local line = lines[index + 2]
-            vim.api.nvim_buf_add_highlight(list_buf, M.ns, group, index + 1, #line - #symbol, -1)
+            highlight(index + 1, group, #line - #symbol)
         end
     end
 end
@@ -242,18 +282,19 @@ local function start_terminal(id, command)
     vim.bo[buf].buflisted = false
     vim.bo[buf].swapfile = false
 
-    vim.keymap.set({ "n", "t" }, config.keys.list, function() M.focus_list() end,
-        { buffer = buf, desc = "Focus agent list" })
-    vim.keymap.set({ "n", "t" }, config.keys.next, function() M.cycle_slot(1) end,
-        { buffer = buf, desc = "Next agent terminal" })
-    vim.keymap.set({ "n", "t" }, config.keys.previous, function() M.cycle_slot(-1) end,
-        { buffer = buf, desc = "Previous agent terminal" })
-    vim.keymap.set("t", config.keys.escape, [[<C-\><C-n>]], { buffer = buf, desc = "Leave terminal mode" })
-    vim.keymap.set({ "n", "t" }, config.keys.hide, function() hide() end,
-        { buffer = buf, desc = "Hide agent dashboard" })
+    local function map(key, modes, callback, desc)
+        if type(key) == "string" and key ~= "" then
+            vim.keymap.set(modes, key, callback, { buffer = buf, desc = desc })
+        end
+    end
+    map(config.keys.list, { "n", "t" }, function() M.focus_list() end, "Focus agent list")
+    map(config.keys.next, { "n", "t" }, function() M.cycle_slot(1) end, "Next agent terminal")
+    map(config.keys.previous, { "n", "t" }, function() M.cycle_slot(-1) end, "Previous agent terminal")
+    map(config.keys.escape, "t", [[<C-\><C-n>]], "Leave terminal mode")
+    map(config.keys.hide, { "n", "t" }, hide, "Hide agent dashboard")
 
     vim.api.nvim_buf_call(buf, function()
-        local ok, job = pcall(vim.fn.termopen, vim.o.shell, {
+        local opts = {
             cwd = vim.fn.getcwd(),
             env = { NVIM_AGENT_DASHBOARD_DIR = state_dir, NVIM_AGENT_SLOT = tostring(id) },
             on_exit = function()
@@ -265,7 +306,11 @@ local function start_terminal(id, command)
                     render()
                 end)
             end,
-        })
+        }
+        local open_terminal = vim.fn.has("nvim-0.11") == 1 and function(command, options)
+            return vim.fn.jobstart(command, vim.tbl_extend("force", options, { term = true }))
+        end or vim.fn.termopen
+        local ok, job = pcall(open_terminal, vim.o.shell, opts)
         term.job_id = ok and job or -1
     end)
     if term.job_id <= 0 then
@@ -278,6 +323,10 @@ end
 
 local function open_slot(id, command, session)
     if not terminals[id] then return end
+    if not terminal_config() then
+        vim.notify("Agent dashboard needs at least 70 columns and 14 lines", vim.log.levels.WARN)
+        return
+    end
     changing = true
     selected = id
     local term = terminals[id]
@@ -285,7 +334,7 @@ local function open_slot(id, command, session)
         or (term.job_id and vim.fn.jobwait({ term.job_id }, 0)[1] ~= -1)
     if spawn then
         term.claimed = command ~= nil
-        term.session_id, term.title = nil, nil
+        term.session_id, term.agent, term.title = nil, nil, nil
         states[id] = nil
         vim.fn.delete(state_dir .. "/" .. id .. ".json")
         if term.bufnr and vim.api.nvim_buf_is_valid(term.bufnr) then
@@ -294,7 +343,7 @@ local function open_slot(id, command, session)
         term.bufnr = vim.api.nvim_create_buf(false, false)
     end
     if session then
-        term.session_id, term.title = session.id, session_title(session)
+        term.session_id, term.agent, term.title = session.id, session.harness, session_title(session)
     end
     if valid(terminal_win) then
         vim.api.nvim_win_set_buf(terminal_win, term.bufnr)
@@ -325,7 +374,9 @@ end
 local function open_session(session)
     for _, id in ipairs(slots) do
         local entry = states[id]
-        if entry and entry.session == session.id and entry.agent == session.harness
+        local term = terminals[id]
+        if ((entry and entry.session == session.id and entry.agent == session.harness)
+            or (term and term.session_id == session.id and term.agent == session.harness))
             and status(id) ~= "exited" then
             open_slot(id)
             return
@@ -335,13 +386,25 @@ local function open_session(session)
         vim.notify(session.harness .. " is not available on PATH", vim.log.levels.WARN)
         return
     end
+    local function shell_busy(term)
+        if not term or not term.job_id or term.job_id <= 0 then return false end
+        local ok, pid = pcall(vim.fn.jobpid, term.job_id)
+        if not ok or type(pid) ~= "number" or pid <= 0 then return false end
+        if not vim.api.nvim_get_proc_children then return false end
+        local got_children, children = pcall(vim.api.nvim_get_proc_children, pid)
+        return got_children and type(children) == "table" and #children > 0
+    end
+    local function available(id)
+        local term = terminals[id]
+        return term and not term.claimed and not shell_busy(term)
+            and (status(id) == "shell" or status(id) == "empty")
+    end
     local target
-    if terminals[selected] and not terminals[selected].claimed
-        and (status(selected) == "shell" or status(selected) == "empty") then
+    if available(selected) then
         target = selected
     else
         for _, id in ipairs(slots) do
-            if not terminals[id].claimed and (status(id) == "shell" or status(id) == "empty") then
+            if available(id) then
                 target = id
                 break
             end
@@ -351,7 +414,11 @@ local function open_session(session)
         vim.notify("Agent dashboard slot limit reached", vim.log.levels.WARN)
         return
     end
-    local command = session.harness == "claude" and "claude --resume " or "opencode --session "
+    local command = ({ claude = "claude --resume ", opencode = "opencode --session " })[session.harness]
+    if not command then
+        vim.notify("No resume command configured for " .. tostring(session.harness), vim.log.levels.WARN)
+        return
+    end
     open_slot(target or create_slot(), command .. vim.fn.shellescape(session.id), session)
 end
 
@@ -369,6 +436,106 @@ local function add_slot()
         return
     end
     open_slot(create_slot())
+end
+
+function M.status()
+    return badge()
+end
+
+function M.send_context(kind, line_range)
+    kind = kind or "selection"
+    local text
+    if line_range then
+        text = table.concat(vim.api.nvim_buf_get_lines(0, line_range[1] - 1, line_range[2], false), "\n")
+    elseif kind == "selection" then
+        local visual_mode = vim.fn.mode(1)
+        local active_visual = visual_mode == "v" or visual_mode == "V" or visual_mode == "\22"
+        local start_pos = vim.fn.getpos(active_visual and "v" or "'<")
+        local end_pos = vim.fn.getpos(active_visual and "." or "'>")
+        if start_pos[2] == 0 or end_pos[2] == 0 then
+            vim.notify("No previous visual selection", vim.log.levels.WARN)
+            return false
+        end
+        local selection_type = active_visual and visual_mode or vim.fn.visualmode()
+        local region = vim.fn.getregion(start_pos, end_pos, { type = selection_type })
+        text = table.concat(region, "\n")
+    elseif kind == "file" or kind == "location" then
+        local path = vim.api.nvim_buf_get_name(0)
+        if path == "" then
+            vim.notify("Current buffer has no file name", vim.log.levels.WARN)
+            return false
+        end
+        path = vim.fn.fnamemodify(path, ":.")
+        text = "@" .. path .. (kind == "location" and ":" .. vim.api.nvim_win_get_cursor(0)[1] or "") .. " "
+    else
+        vim.notify("Use send with selection, file, or location", vim.log.levels.WARN)
+        return false
+    end
+    local term = terminals[selected]
+    if not term or not term.job_id or term.job_id <= 0 or term.exited
+        or vim.fn.jobwait({ term.job_id }, 0)[1] ~= -1 then
+        vim.notify("Selected agent terminal is not running", vim.log.levels.WARN)
+        return false
+    end
+    vim.api.nvim_chan_send(term.job_id, "\27[200~" .. text .. "\27[201~")
+    if not valid(terminal_win) or vim.api.nvim_get_current_win() ~= terminal_win then
+        vim.notify("Sent context to agent slot " .. selected_index(), vim.log.levels.INFO)
+    end
+    return true
+end
+
+function M.claude_hook_path()
+    local source = debug.getinfo(1, "S").source:sub(2)
+    local root = source:gsub("/lua/agent_dashboard/init%.lua$", "")
+    return root .. "/extras/claude/agent-dashboard-report.sh"
+end
+
+function M.hooks()
+    local command = "bash " .. vim.fn.shellescape(M.claude_hook_path())
+    local hooks = { hooks = {
+        SessionStart = { { hooks = { { type = "command", command = command .. " start" } } } },
+        UserPromptSubmit = { { hooks = { { type = "command", command = command .. " working" } } } },
+        Stop = { { hooks = { { type = "command", command = command .. " idle" } } } },
+        Notification = { { matcher = "permission_prompt", hooks = {
+            { type = "command", command = command .. " blocked" },
+        } } },
+        SessionEnd = { { hooks = { { type = "command", command = command .. " end" } } } },
+    } }
+    -- vim.json.encode only accepts options on Neovim 0.11+.
+    if vim.fn.has("nvim-0.11") == 1 then return vim.json.encode(hooks, { indent = true }) end
+    return vim.json.encode(hooks)
+end
+
+local function show_help()
+    local help_buf = vim.api.nvim_create_buf(false, true)
+    local help_lines = {
+        "Agent Dashboard keys", "", "Sidebar",
+        "  j / k       Move between rows",
+        "  Enter       Open selected slot or session",
+        "  1-9         Open a slot (create the next slot)",
+        "  a / x       Add / remove a slot",
+        "  ?           Show this help",
+        "  q / Esc     Hide the dashboard", "", "Agent terminal",
+        "  " .. (config.keys.list or "") .. "       Focus the sidebar",
+        "  " .. (config.keys.next or "") .. " / " .. (config.keys.previous or "") .. "   Cycle slots",
+        "  " .. (config.keys.hide or "") .. "       Hide the dashboard",
+        "", "Press q or Esc to close",
+    }
+    vim.api.nvim_buf_set_lines(help_buf, 0, -1, false, help_lines)
+    vim.bo[help_buf].modifiable = false
+    local width = math.min(44, vim.o.columns - 4)
+    local height = math.min(#help_lines, vim.o.lines - 4)
+    local win = vim.api.nvim_open_win(help_buf, true, {
+        relative = "editor", style = "minimal", border = "rounded", width = width, height = height,
+        row = math.max(0, math.floor((vim.o.lines - height - 2) / 2)),
+        col = math.max(0, math.floor((vim.o.columns - width - 2) / 2)),
+    })
+    local function close()
+        if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end
+        if vim.api.nvim_buf_is_valid(help_buf) then vim.api.nvim_buf_delete(help_buf, { force = true }) end
+    end
+    vim.keymap.set("n", "q", close, { buffer = help_buf, nowait = true })
+    vim.keymap.set("n", "<Esc>", close, { buffer = help_buf, nowait = true })
 end
 
 local function remove_slot()
@@ -402,6 +569,7 @@ local function list_keymaps()
     vim.keymap.set("n", "<Esc>", hide, opts)
     vim.keymap.set("n", "a", add_slot, opts)
     vim.keymap.set("n", "x", remove_slot, opts)
+    vim.keymap.set("n", "?", show_help, opts)
     vim.keymap.set("n", "<CR>", function()
         local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
         if row and row.session then open_session(row.session)
@@ -457,6 +625,10 @@ function M.toggle()
 end
 
 function M.toggle_slot(index)
+    if not terminal_config() then
+        vim.notify("Agent dashboard needs at least 70 columns and 14 lines", vim.log.levels.WARN)
+        return
+    end
     if index > #slots then
         for _ = #slots + 1, index do create_slot() end
         open_slot(slots[index])
@@ -478,36 +650,67 @@ local function poll()
             local file = state_dir .. "/" .. id .. ".json"
             local raw = vim.fn.filereadable(file) == 1 and vim.fn.readfile(file) or nil
             local ok, report = pcall(vim.json.decode, raw and table.concat(raw, "\n") or "")
-            if ok and type(report) == "table" and report.slot == id
+            local valid_report = ok and type(report) == "table" and report.slot == id
                 and type(report.time) == "number" and type(report.session) == "string"
                 and type(report.turn) == "number"
+                and (report.pid == nil or (type(report.pid) == "number" and report.pid > 0))
+                and (report.heartbeat == nil or type(report.heartbeat) == "boolean")
                 and (report.state == "idle" or report.state == "working"
-                    or report.state == "blocked" or report.state == "unknown") then
+                    or report.state == "blocked" or report.state == "unknown")
+            local dead_report = valid_report and type(report.pid) == "number" and not process_alive(report.pid)
+            if dead_report then
+                vim.fn.delete(file)
+                valid_report = false
+            end
+            local ignored_report = valid_report and not slot_owns_report(term, report.pid)
+            if valid_report and not ignored_report then
                 term.claimed = true
-                local stale = math.abs(os.time() - report.time) > 10
+                local stale = report_stale(report)
                 if not entry or entry.session ~= report.session then
                     if term.session_id ~= report.session then term.title = nil end
                     term.session_id = report.session
                     entry = { session = report.session, seen = report.turn == 0, turn = 0 }
                     states[id] = entry
                 end
-                if entry.state ~= report.state or entry.stale ~= stale or entry.turn ~= report.turn then
+                if entry.state ~= report.state or entry.stale ~= stale
+                    or entry.turn ~= report.turn or entry.pid ~= report.pid then
+                    local previous_state, previous_turn = entry.state, entry.turn
                     if report.state == "working" then entry.seen = false end
                     if report.state == "idle" and report.turn > entry.turn then
                         entry.seen = valid(terminal_win) and vim.api.nvim_get_current_win() == terminal_win and selected == id
                     end
                     entry.state, entry.stale, entry.turn = report.state, stale, report.turn
                     entry.agent = type(report.agent) == "string" and report.agent or "opencode"
+                    entry.pid = report.pid
+                    term.agent = entry.agent
+                    if selected ~= id or not valid(terminal_win) then
+                        local message
+                        if report.state == "blocked" and previous_state ~= "blocked" then
+                            message = (entry.agent == "claude" and "Claude" or "OpenCode") .. " is waiting for permission"
+                        elseif report.state == "idle" and report.turn > previous_turn then
+                            message = (entry.agent == "claude" and "Claude" or "OpenCode") .. " finished a turn"
+                        end
+                        local notifications = type(config.notifications) == "table"
+                            and config.notifications or { enabled = config.notifications ~= false }
+                        if message and notifications.enabled ~= false and not stale then
+                            vim.notify(message, vim.log.levels.INFO, { title = "Agent Dashboard" })
+                            if notifications.macos and vim.fn.executable("osascript") == 1 then
+                                vim.system({ "osascript", "-e",
+                                    'display notification "' .. message .. '" with title "Agent Dashboard"' })
+                            end
+                        end
+                    end
                     render()
                 end
-            elseif entry then
+            elseif dead_report or (entry and not ignored_report) then
                 states[id] = nil
-                term.title, term.session_id = nil, nil
+                term.title, term.session_id, term.agent = nil, nil, nil
+                term.claimed = false
                 render()
             end
         elseif entry then
             states[id] = nil
-            term.title, term.session_id = nil, nil
+            term.title, term.session_id, term.agent = nil, nil, nil
             render()
         end
     end
@@ -517,17 +720,51 @@ function M.setup(opts)
     if timer then return end
     config = vim.tbl_deep_extend("force", config, opts or {})
     M.ns = vim.api.nvim_create_namespace("agent_dashboard")
-    state_dir = vim.fn.stdpath("state") .. "/agent-dashboard/" .. vim.fn.getpid() .. "-" .. vim.uv.hrtime()
+    for group, target in pairs({
+        AgentDashboardBlocked = "DiagnosticError", AgentDashboardWorking = "DiagnosticInfo",
+        AgentDashboardDone = "DiagnosticWarn", AgentDashboardUnknown = "DiagnosticHint",
+        AgentDashboardTitle = "Title",
+    }) do
+        vim.api.nvim_set_hl(0, group, { default = true, link = target })
+    end
+    state_dir = vim.fn.stdpath("state") .. "/agent-dashboard/" .. vim.fn.getpid() .. "-"
+        .. string.format("%d", vim.uv.hrtime())
     vim.fn.mkdir(state_dir, "p", 448)
     if config.tmux then tmux.setup(state_dir) end
     timer = vim.uv.new_timer()
     timer:start(0, 1000, vim.schedule_wrap(poll))
     vim.api.nvim_create_autocmd("DirChanged", {
         callback = function()
+            refresh_generation = refresh_generation + 1
+            refresh_pending = false
             refresh_at = 0
             refresh_sessions()
         end,
     })
+    vim.api.nvim_create_user_command("AgentDashboard", function(command)
+        local args = vim.split(command.args, "%s+", { trimempty = true })
+        local action = args[1] or "toggle"
+        if action == "toggle" then
+            M.toggle()
+        elseif action == "open" then
+            local index = tonumber(args[2])
+            if not index or index < 1 then
+                vim.notify("Usage: AgentDashboard open N", vim.log.levels.WARN)
+            else
+                M.toggle_slot(index)
+            end
+        elseif action == "add" then
+            add_slot()
+        elseif action == "send" then
+            local line_range = command.range > 0 and { command.line1, command.line2 } or nil
+            M.send_context(args[2] or "selection", line_range)
+        elseif action == "hooks" then
+            vim.api.nvim_echo({ { M.hooks() } }, true, {})
+        else
+            vim.notify("Usage: AgentDashboard [toggle|open N|add|send [selection|file|location]|hooks]",
+                vim.log.levels.WARN)
+        end
+    end, { nargs = "*", range = true, desc = "Control the agent dashboard" })
     vim.api.nvim_create_autocmd("WinEnter", {
         callback = function()
             if not changing and list_visible() then

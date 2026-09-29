@@ -1,0 +1,90 @@
+*agent-dashboard.txt*     Floating agent terminals for Neovim
+
+                                                   *agent-dashboard.nvim*
+agent-dashboard.nvim provides a floating terminal dashboard for Claude Code,
+OpenCode, and other command-line agents. It can show live status, resume recent
+sessions, and send editor context to the selected terminal.
+
+===============================================================================
+CONTENTS                                                  *agent-dashboard-contents*
+
+  1. Setup ........................................ |agent-dashboard-setup|
+  2. Commands ...................................... |agent-dashboard-commands|
+  3. Lua API ....................................... |agent-dashboard-api|
+  4. Status reports ................................ |agent-dashboard-reports|
+  5. Health ........................................ |agent-dashboard-health|
+
+===============================================================================
+1. SETUP                                                     *agent-dashboard-setup*
+
+Call |require()|("agent_dashboard").setup() from your plugin configuration.
+See the project README for lazy.nvim setup and Claude/OpenCode reporter setup.
+
+    require("agent_dashboard").setup({
+      tmux = true,
+      recent_limit = 5,
+      notifications = { enabled = true, macos = false },
+    })
+
+===============================================================================
+2. COMMANDS                                               *agent-dashboard-commands*
+
+:AgentDashboard [toggle]         Toggle the dashboard.
+:AgentDashboard open {N}         Open terminal slot N.
+:AgentDashboard add              Create a terminal slot.
+:AgentDashboard send [kind]      Send selection, file, or location context.
+:AgentDashboard hooks            Print a Claude Code hooks JSON snippet.
+
+The send kinds are:
+
+  selection    Send the active visual selection or last selection (default).
+  file         Send @path/to/file.
+  location     Send @path/to/file:line.
+
+Context is sent with terminal bracketed-paste markers, so multiline selections
+are not submitted as a command or prompt automatically. Path references include
+a trailing space. A command-line range such as :10,20AgentDashboard send sends
+the specified lines.
+
+In a visual-mode Lua mapping, call send_context() directly to use the active
+selection rather than the previous visual marks.
+
+In the sidebar, |j| and |k| move between rows, |Enter| opens a slot or recent
+session, |a| adds a slot, |x| removes one, |?| opens key help, and |q| hides the
+dashboard.
+
+===============================================================================
+3. LUA API                                                  *agent-dashboard-api*
+
+require("agent_dashboard").setup(opts)       Configure the plugin.
+require("agent_dashboard").toggle()           Toggle the dashboard.
+require("agent_dashboard").toggle_slot(n)      Open or hide slot n.
+require("agent_dashboard").focus_list()        Focus the sidebar.
+require("agent_dashboard").cycle_slot(delta)   Move between terminal slots.
+require("agent_dashboard").status()            Return the current badge symbol.
+require("agent_dashboard").send_context(kind)  Send selection/file/location.
+require("agent_dashboard").claude_hook_path()  Return the bundled hook path.
+require("agent_dashboard").hooks()             Return the hook JSON snippet.
+
+The status() function returns one of |!| (blocked), |●| (working), |?| (unknown),
+|○| (idle), |✓| (unseen completion), or an empty string when no slot is active.
+It can be used in a statusline, for example:
+
+    set statusline+=%{v:lua.require'agent_dashboard'.status()}
+
+===============================================================================
+4. STATUS REPORTS                                        *agent-dashboard-reports*
+
+Agent reporters write JSON files under the private state directory provided by
+NVIM_AGENT_DASHBOARD_DIR. Reports include a process pid; heartbeat reporters may
+also set heartbeat=true. Hook-based reports remain valid until their process
+exits or the session ends. The bundled Claude hook setup limits blocked reports
+to permission_prompt notifications.
+
+===============================================================================
+5. HEALTH                                                  *agent-dashboard-health*
+
+Run |:checkhealth| agent_dashboard to check command availability and whether the
+Claude Code and OpenCode reporters are configured.
+
+ vim:tw=78:ts=8:ft=help:norl:
