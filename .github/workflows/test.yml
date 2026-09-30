@@ -23,6 +23,10 @@ jobs:
       - name: Install reporter dependency
         run: sudo apt-get update && sudo apt-get install -y jq
       - name: Run Neovim tests
-        run: nvim --headless -u NONE -i NONE -l tests/agent_dashboard.lua
+        run: |
+          nvim --headless -u NONE -i NONE -l tests/agent_dashboard.lua
+          nvim --headless -u NONE -i NONE -l tests/topics.lua
+          nvim --headless -u NONE -i NONE -l tests/topics_dashboard.lua
+          nvim --headless -u NONE -i NONE -l tests/topics_delivery.lua
       - name: Check reporter syntax
         run: bash -n extras/claude/agent-dashboard-report.sh && node --check extras/opencode/agent-dashboard-tui.js

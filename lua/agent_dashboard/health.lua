@@ -73,6 +73,22 @@ function M.check()
     else
         vim.health.ok("OpenCode TUI reporter is configured")
     end
+
+    local topics = require("agent_dashboard.topics")
+    local topics_dir = topics.directory()
+    local brief_limit = topics.brief_max_lines()
+    if vim.fn.isdirectory(topics_dir) == 1 then
+        for _, topic_dir in ipairs(vim.fn.globpath(topics_dir, "*", false, true)) do
+            local brief = topic_dir .. "/brief.md"
+            if vim.fn.filereadable(brief) == 1 then
+                local lines = vim.fn.readfile(brief)
+                if #lines > brief_limit then
+                    vim.health.warn(vim.fn.fnamemodify(topic_dir, ":t") .. " brief has " .. #lines
+                        .. " lines (recommended maximum: " .. brief_limit .. ")")
+                end
+            end
+        end
+    end
 end
 
 return M

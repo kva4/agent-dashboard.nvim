@@ -13,6 +13,7 @@ CONTENTS                                                  *agent-dashboard-conte
   3. Lua API ....................................... |agent-dashboard-api|
   4. Status reports ................................ |agent-dashboard-reports|
   5. Health ........................................ |agent-dashboard-health|
+  6. Topics ......................................... |agent-dashboard-topics|
 
 ===============================================================================
 1. SETUP                                                     *agent-dashboard-setup*
@@ -24,6 +25,7 @@ See the project README for lazy.nvim setup and Claude/OpenCode reporter setup.
       tmux = true,
       recent_limit = 10,
       notifications = { enabled = true, macos = false },
+      topics = { enabled = true, dir = vim.fn.stdpath("data") .. "/agent-dashboard/topics" },
     })
 
 ===============================================================================
@@ -34,6 +36,27 @@ See the project README for lazy.nvim setup and Claude/OpenCode reporter setup.
 :AgentDashboard add              Create a terminal slot.
 :AgentDashboard send [kind]      Send selection, file, or location context.
 :AgentDashboard hooks            Print a Claude Code hooks JSON snippet.
+:AgentDashboard topic [action]   Create, open, attach, or export a topic.
+:AgentDashboard note [topic]     Save the selection or range as a topic note.
+:AgentDashboard distill [topic] [focus...]
+                                  Paste a focused note-writing prompt.
+:AgentDashboard brief [topic] [focus...]
+                                  Draft/improve a brief from session context.
+:AgentDashboard brief review [topic]
+                                  Diff the current brief and its proposal.
+:AgentDashboard brief accept [topic]
+                                  Accept a reviewed brief proposal.
+:AgentDashboard brief reject [topic]
+                                  Reject a brief proposal.
+:AgentDashboard consolidate [topic]
+                                  Paste a brief-consolidation prompt.
+:AgentDashboard consolidate review [topic]
+                                  Diff the current brief and its proposal.
+:AgentDashboard consolidate accept [topic]
+                                  Accept a reviewed brief proposal.
+:AgentDashboard consolidate reject [topic]
+                                  Reject a brief proposal.
+:AgentDashboard skills           Browse Claude Code skills.
 
 The send kinds are:
 
@@ -49,10 +72,12 @@ the specified lines.
 In a visual-mode Lua mapping, call send_context() directly to use the active
 selection rather than the previous visual marks.
 
-In the sidebar, |j| and |k| move between rows, |Enter| opens a slot or recent
-session, |a| adds a slot, |x| removes one, |y| copies the session id of the
-row, |D| deletes the selected recent session after a confirmation, |?| opens
-key help, and |q| hides the dashboard.
+In the sidebar, |j| and |k| move between rows, |Enter| opens a slot, recent
+session, or topic brief, |a| adds a slot, |x| removes one, |y| copies the session
+id of the row, and |t| attaches or detaches a topic on a slot. On a topic row,
+|n| browses notes, |D| pastes a distill prompt, and |C| pastes a consolidation
+prompt. On a recent session row, |D| deletes the session after confirmation.
+|?| opens key help, and |q| hides the dashboard.
 
 ===============================================================================
 3. LUA API                                                  *agent-dashboard-api*
@@ -64,6 +89,13 @@ require("agent_dashboard").focus_list()        Focus the sidebar.
 require("agent_dashboard").cycle_slot(delta)   Move between terminal slots.
 require("agent_dashboard").status()            Return the current badge symbol.
 require("agent_dashboard").send_context(kind)  Send selection/file/location.
+require("agent_dashboard").attach_topic(n, id) Attach a topic to slot n; nil detaches.
+require("agent_dashboard").note(id, range)     Save selected text as a topic note.
+require("agent_dashboard").distill(id)         Paste a distill prompt.
+require("agent_dashboard").brief(id)           Paste a session-based brief prompt.
+require("agent_dashboard").consolidate(id)     Paste a consolidation prompt.
+require("agent_dashboard").review_consolidation(id)
+                                               Open a brief proposal diff.
 require("agent_dashboard").claude_hook_path()  Return the bundled hook path.
 require("agent_dashboard").hooks()             Return the hook JSON snippet.
 
@@ -72,6 +104,13 @@ The status() function returns one of |!| (blocked), |●| (working), |?| (unknow
 It can be used in a statusline, for example:
 
     set statusline+=%{v:lua.require'agent_dashboard'.status()}
+
+distill(id, focus) and brief(id, focus) accept an optional focus string. Pass nil
+as id to use the attached topic or a picker. In commands, use distill -- {focus}
+or brief -- {focus} to omit the topic ID. Focus text is the remaining command
+text and does not require quotation marks. It is included with custom prompt
+templates too. Distill creates one targeted note; brief preserves existing
+context outside the focus. The pasted prompt still requires Enter to submit.
 
 ===============================================================================
 4. STATUS REPORTS                                        *agent-dashboard-reports*
@@ -87,5 +126,40 @@ to permission_prompt notifications.
 
 Run |:checkhealth| agent_dashboard to check command availability and whether the
 Claude Code and OpenCode reporters are configured.
+
+===============================================================================
+6. TOPICS                                                  *agent-dashboard-topics*
+
+Topics are Markdown folders stored under stdpath("data") .. "/agent-dashboard/topics"
+by default. A topic contains topic.md metadata, brief.md, and dated notes in
+notes/. Topic metadata uses a small YAML subset: scalar fields, project lists,
+and a one-level source map in note frontmatter. Creating a topic associates it
+with the current working directory; edit topic.md to add or remove project roots.
+
+:AgentDashboard topic new {id}             Create and open a topic.
+:AgentDashboard topic open [id]            Open a brief, or choose one.
+:AgentDashboard topic list                 Choose a topic and open its brief.
+:AgentDashboard topic attach {id}          Attach to the current slot.
+:AgentDashboard topic detach               Detach from the current slot.
+:AgentDashboard topic export-skill {id}    Export a Claude skill.
+
+Each slot supports one topic. Attachments last for the current Neovim process.
+Claude receives the brief through the SessionStart reporter. OpenCode receives
+a brief-reading prompt only when the dashboard resumes a session in an attached
+slot and the reporter identifies it as idle. Switching sessions never repeats
+the prompt. Delivery times out after topics.opencode_prompt_timeout_ms (15000
+by default) without a matching report. The prompt is pasted without Enter.
+Manual OpenCode starts do not receive it. Claude reads <slot>.topic from the
+dashboard state directory on every SessionStart; attaching and detaching do
+not restart shells. Agent
+prompts for distill and consolidate are pasted but not submitted automatically;
+review them and press Enter. Consolidation writes brief.proposed.md; review its
+diff before accepting or rejecting it.
+
+topics.auto_distill accepts false (default) or "remind". Reminders fire once per
+session when an attached agent finishes a turn. Use consolidate topic {id} to
+address topics named review, accept, or reject.
+
+See docs/design/topics.md for the full workflow, metadata format, and options.
 
  vim:tw=78:ts=8:ft=help:norl:

@@ -70,7 +70,7 @@ setup that keeps shortcuts under your control:
 
 ```lua
 dashboard.setup({
-    recent_limit = 5,
+    recent_limit = 10,
     height = 0.78, -- fraction of the available editor height
     tmux = true,
     notifications = { enabled = true, macos = false },
@@ -95,7 +95,7 @@ depend on ToggleTerm.
 | Agent terminal | `<C-q>` | Hide dashboard without stopping agents |
 | Sidebar | `j` / `k`, `<CR>` | Select and open a slot or recent session |
 | Sidebar | `1`–`9` | Open a slot (or create the next one) |
-| Sidebar | `a`, `x`, `?` | Add / remove a selected slot / show key help |
+| Sidebar | `a`, `x`, `y`, `D`, `C`, `t`, `n`, `?` | Add / remove slot / copy session id / `D` deletes a session or distills a topic / consolidate topic / attach or detach topic / browse topic notes / show help |
 | Sidebar | `q` / `<Esc>` | Hide dashboard |
 
 The dashboard starts with an unused shell. You can launch any agent yourself;
@@ -128,6 +128,58 @@ mappings can call `dashboard.send_context()` directly to send the active selecti
 Prefix a range, such as `:10,20AgentDashboard send`, to send those lines. Context is
 inserted into the selected running terminal using bracketed paste, preserving
 multiline selections without submitting them automatically.
+
+## Topics
+
+Topics keep reviewed knowledge across agent sessions and projects as editable
+Markdown files. They are stored under
+`stdpath("data") .. "/agent-dashboard/topics"` by default. Create and attach one
+to the selected slot with:
+
+```vim
+:AgentDashboard topic new billing-migration
+:AgentDashboard topic attach billing-migration
+```
+
+The sidebar shows topics and their unreviewed note counts. Press `t` on a slot to
+attach or detach a topic, `Enter` on a topic to edit its brief, `n` to browse its
+notes, `D` to paste a distillation prompt into the selected agent terminal, and
+`C` to paste a consolidation prompt. Press Enter to submit either prompt. Review proposals with
+`:AgentDashboard consolidate review billing-migration`, then accept or reject
+them explicitly. `:AgentDashboard note [topic]` saves the current selection or
+range with its project and session source.
+
+To draft or improve a brief from a session that contains your feature description,
+select that agent slot and run `:AgentDashboard brief billing-migration`. Submit
+the pasted prompt, then use `:AgentDashboard brief review billing-migration`
+and `:AgentDashboard brief accept billing-migration` (or `reject`). This updates
+the feature overview from session context without marking investigation notes
+consolidated. Use `consolidate` later to fold those notes into the brief.
+
+Both commands accept optional focus text after the topic ID. This lets you
+capture several targeted notes from one long conversation:
+
+```vim
+:AgentDashboard distill bank-ownership-transfer user state API responses and permissions
+:AgentDashboard distill bank-ownership-transfer access token creation and expiration
+:AgentDashboard brief bank-ownership-transfer clarify scope and acceptance criteria
+```
+
+Use `distill -- <focus text>` or `brief -- <focus text>` to use the selected
+slot's attached topic (or choose one if no topic is attached). Focused brief
+updates preserve accurate existing context outside the requested focus. Review
+and submit each pasted prompt with Enter before starting the next request.
+
+Claude Code receives the brief from the configured `SessionStart` reporter.
+OpenCode receives a brief-reading prompt only when the dashboard resumes a
+session in an attached slot, after the reporter identifies that session as idle.
+The prompt is pasted once without submitting it; press Enter to send it. Manual
+OpenCode starts do not receive this prompt. Claude's next SessionStart reads the
+current attachment from a per-slot file, so attaching or detaching takes effect
+without restarting the shell. Topic attachments last for the current Neovim process; the files
+remain on disk and can be placed in a Git repository if you want to share them.
+See [`docs/design/topics.md`](docs/design/topics.md) for the storage format,
+configuration, Lua API, and workflow details.
 
 ## Agent status reporting
 
@@ -184,9 +236,15 @@ outside a dashboard terminal. Restart Claude Code after changing its hooks.
 
 ```sh
 nvim --headless -u NONE -i NONE -l tests/agent_dashboard.lua
+nvim --headless -u NONE -i NONE -l tests/topics.lua
+nvim --headless -u NONE -i NONE -l tests/topics_dashboard.lua
+nvim --headless -u NONE -i NONE -l tests/topics_delivery.lua
 node --check extras/opencode/agent-dashboard-tui.js
 bash -n extras/claude/agent-dashboard-report.sh
 ```
+
+To re-record the demo GIF, install [VHS](https://github.com/charmbracelet/vhs)
+and run `vhs assets/demo/demo.tape` from the repo root in a regular terminal.
 
 Run `:checkhealth agent_dashboard` to verify `jq`, the agent CLIs, and reporter
 configuration. See `doc/agent-dashboard.txt` for the full command and Lua API

@@ -73,3 +73,27 @@ jq -n \
     '{slot: $slot, time: $time, session: $session, turn: $turn, state: $state, agent: $agent} + (if $pid > 1 then {pid: $pid} else {} end)' \
     > "$tmp"
 mv "$tmp" "$state_file"
+
+topic="${NVIM_AGENT_TOPIC:-topic}"
+topic_dir="${NVIM_AGENT_TOPIC_DIR:-}"
+brief_limit=150
+attachment="$NVIM_AGENT_DASHBOARD_DIR/$NVIM_AGENT_SLOT.topic"
+if [ -f "$attachment" ]; then
+    { IFS= read -r topic || true; IFS= read -r topic_dir || true; IFS= read -r brief_limit || true; } < "$attachment"
+fi
+case "$brief_limit" in ''|*[!0-9]*|0) brief_limit=150 ;; esac
+if [ "$action" = "start" ] && [ -n "$topic_dir" ]; then
+    brief="$topic_dir/brief.md"
+    if [ -r "$brief" ]; then
+        printf 'You are working on the topic "%s". Read its notes when useful: %s/notes\n' \
+            "$topic" "$topic_dir"
+        printf 'Topic brief (%s):\n---\n' "$brief"
+        count=0
+        while IFS= read -r line || [ -n "$line" ]; do
+            [ "$count" -lt "$brief_limit" ] || break
+            printf '%s\n' "$line"
+            count=$((count + 1))
+        done < "$brief"
+        printf '\n---\n'
+    fi
+fi
