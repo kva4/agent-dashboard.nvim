@@ -117,6 +117,34 @@ source.refresh(cwd, function(sessions) limited = sessions end, { recent_limit = 
 assert(vim.wait(1000, function() return limited ~= nil end))
 assert(#limited == 1 and limited[1].id == "ses_recent")
 
+-- Deleting a Claude session removes its transcript and companion folder, and rejects bad ids.
+vim.fn.mkdir(dir .. "/" .. other_uuid, "p")
+vim.fn.writefile({ "{}" }, dir .. "/" .. other_uuid .. "/tool-result.txt")
+local deleted, delete_error
+source.delete({ harness = "claude", id = other_uuid }, cwd, function(ok, err) deleted, delete_error = ok, err end,
+    { claude_projects = root })
+assert(deleted == true and delete_error == nil)
+assert(vim.fn.filereadable(dir .. "/" .. other_uuid .. ".jsonl") == 0)
+assert(vim.fn.isdirectory(dir .. "/" .. other_uuid) == 0)
+assert(vim.fn.filereadable(dir .. "/" .. uuid .. ".jsonl") == 1)
+source.delete({ harness = "claude", id = "../evil" }, cwd, function(ok) deleted = ok end, { claude_projects = root })
+assert(deleted == false)
+
+-- Deleting an OpenCode session shells out to the CLI and reports its failure.
+local outer_jobstart = vim.fn.jobstart
+local delete_args
+vim.fn.jobstart = function(args, opts)
+    delete_args = args
+    vim.schedule(function() opts.on_stderr(1, { "boom" }); opts.on_exit(1, 1) end)
+    return 1
+end
+deleted = nil
+source.delete({ harness = "opencode", id = "ses_recent" }, cwd, function(ok, err) deleted, delete_error = ok, err end)
+assert(vim.wait(1000, function() return deleted ~= nil end))
+assert(vim.deep_equal(delete_args, { "opencode", "session", "delete", "ses_recent" }))
+assert(deleted == false and delete_error == "boom")
+vim.fn.jobstart = outer_jobstart
+
 if vim.fn.executable("jq") == 1 then
     local report_dir = cwd .. "/reporter"
     vim.fn.mkdir(report_dir, "p")

@@ -190,6 +190,41 @@ local function merge(opencode, claude, limit)
     return opencode
 end
 
+-- Deletes a recent session through its harness. `callback(ok, err)` runs once the data is gone.
+function M.delete(session, cwd, callback, opts)
+    opts = opts or {}
+    if session.harness == "claude" then
+        local id = session.id
+        if type(id) ~= "string" or not id:match("^[%x]+%-%x+%-%x+%-%x+%-%x+$") then
+            callback(false, "Invalid Claude session id"); return
+        end
+        local dir = find_project_dir(opts.claude_projects or vim.fn.expand("~/.claude/projects"), cwd)
+        if not dir then callback(false, "Claude project directory not found"); return end
+        local path = dir .. "/" .. id .. ".jsonl"
+        if vim.fn.delete(path) ~= 0 then callback(false, "Could not delete " .. path); return end
+        -- Subagent transcripts and tool results live in a folder named after the session.
+        vim.fn.delete(dir .. "/" .. id, "rf")
+        title_cache[path] = nil
+        callback(true)
+    elseif session.harness == "opencode" then
+        if type(session.id) ~= "string" or not session.id:match("^ses_[%w]+$") then
+            callback(false, "Invalid OpenCode session id"); return
+        end
+        local stderr = {}
+        local job = vim.fn.jobstart({ "opencode", "session", "delete", session.id }, {
+            cwd = cwd,
+            stderr_buffered = true,
+            on_stderr = function(_, data) stderr = data end,
+            on_exit = function(_, code)
+                callback(code == 0, code ~= 0 and vim.trim(table.concat(stderr, "\n")) or nil)
+            end,
+        })
+        if job <= 0 then callback(false, "Could not start opencode") end
+    else
+        callback(false, "Unknown harness")
+    end
+end
+
 function M.refresh(cwd, callback, opts)
     opts = opts or {}
     local limit = opts.recent_limit or 10

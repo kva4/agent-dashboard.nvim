@@ -513,6 +513,7 @@ local function show_help()
         "  1-9         Open a slot (create the next slot)",
         "  a / x       Add / remove a slot",
         "  y           Copy the session id of the row",
+        "  D           Delete the selected recent session",
         "  ?           Show this help",
         "  q / Esc     Hide the dashboard", "", "Agent terminal",
         "  " .. (config.keys.list or "") .. "       Focus the sidebar",
@@ -575,9 +576,41 @@ local function copy_session_id()
     vim.notify("Copied session id " .. session_id, vim.log.levels.INFO)
 end
 
+local function delete_recent_session()
+    local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
+    local session = row and row.session
+    if not session then
+        vim.notify("Select a recent session to delete", vim.log.levels.INFO)
+        return
+    end
+    for _, id in ipairs(slots) do
+        local term, entry = terminals[id], states[id]
+        local open_id = entry and entry.session or term and term.session_id
+        if term and not term.exited and open_id == session.id then
+            vim.notify("Close the agent terminal before deleting its session", vim.log.levels.WARN)
+            return
+        end
+    end
+    local label = session.harness == "claude" and "Claude" or "OpenCode"
+    if vim.fn.confirm("Delete " .. label .. " session \"" .. session_title(session) .. "\"? This can't be undone.",
+        "&Yes\n&No", 2) ~= 1 then return end
+    session_source.delete(session, vim.fn.getcwd(), function(ok, err)
+        vim.schedule(function()
+            if not ok then
+                vim.notify("Could not delete session: " .. (err ~= "" and err or "unknown error"), vim.log.levels.ERROR)
+                return
+            end
+            vim.notify("Deleted session " .. session.id, vim.log.levels.INFO)
+            refresh_at = 0
+            refresh_sessions()
+        end)
+    end, config)
+end
+
 local function list_keymaps()
     local opts = { buffer = list_buf, silent = true }
     vim.keymap.set("n", "y", copy_session_id, opts)
+    vim.keymap.set("n", "D", delete_recent_session, opts)
     vim.keymap.set("n", "q", hide, opts)
     vim.keymap.set("n", "<Esc>", hide, opts)
     vim.keymap.set("n", "a", add_slot, opts)
