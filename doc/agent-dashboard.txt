@@ -70,8 +70,8 @@ selection rather than the previous visual marks.
 
 In the sidebar, |j| and |k| move between rows, |Enter| opens a slot, recent
 session, or topic brief, |a| adds a slot, |x| removes a slot or deletes a recent
-session after confirmation, |y| copies the session
-id of the row, and |t| attaches or detaches a topic on a slot. On a topic row,
+session after confirmation, |y| copies the session id of the row, and |t|
+attaches or detaches a topic on a slot. On a topic row,
 |n| browses notes and |D| opens note capture. On a recent session row, |D|
 deletes the session after confirmation.
 |c| on a slot opens capture from that source; on a topic it uses that destination

@@ -97,8 +97,11 @@ depend on ToggleTerm.
 | Sidebar | `j` / `k`, `<CR>` | Select and open a slot or recent session |
 | Sidebar | `1`–`9` | Open a slot (or create the next one) |
 | Sidebar | `<Tab>`, `<C-l>`, `l`, `<Right>`, `<C-w>l` | Return to the active terminal and enter terminal mode |
+| Sidebar | `a`, `?` | Add a slot / show key help |
 | Sidebar | `x` | Remove a terminal slot or delete a recent session (asks for confirmation) |
-| Sidebar | `a`, `y`, `D`, `C`, `t`, `n`, `c`, `?` | Add slot / copy session id / delete recent session or save topic note / consolidate topic / attach or detach topic / browse topic notes / capture findings for the selected source / show help |
+| Sidebar | `D` | Delete a recent session (asks for confirmation) or open note capture on a topic row |
+| Sidebar | `y` | Copy the session ID of the row |
+| Sidebar | `C`, `t`, `n`, `c` | Consolidate topic / attach or detach topic / browse topic notes / capture findings for the selected source |
 | Sidebar | `q` / `<Esc>` | Hide dashboard |
 
 The dashboard starts with an unused shell. You can launch any agent yourself;

@@ -1045,6 +1045,7 @@ end
 local function list_keymaps()
     local opts = { buffer = list_buf, silent = true }
     vim.keymap.set("n", "y", copy_session_id, opts)
+    vim.keymap.set("n", "D", delete_recent_session, opts)
     vim.keymap.set("n", "q", hide, opts)
     vim.keymap.set("n", "<Esc>", hide, opts)
     vim.keymap.set("n", "a", add_slot, opts)
