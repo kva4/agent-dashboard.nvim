@@ -184,7 +184,7 @@ local function render()
     lines[#lines + 1] = ""
     lines[#lines + 1] = " RECENT"
     local height = vim.api.nvim_win_get_height(list_win)
-    local available = math.max(0, height - #lines - 3)
+    local available = math.max(0, height - #lines - 4)
     for index = 1, math.min(#recent, available, config.recent_limit) do
         local session = recent[index]
         local label = session.harness == "claude" and "CC" or "OC"
@@ -195,7 +195,8 @@ local function render()
     lines[#lines + 1] = " " .. string.rep("─", vim.api.nvim_win_get_width(list_win) - 2)
     local divider_row = #lines - 1
     lines[#lines + 1] = " a add   x remove   ? help"
-    lines[#lines + 1] = " Enter open   q close"
+    lines[#lines + 1] = " Enter open  Tab terminal"
+    lines[#lines + 1] = " q close"
 
     vim.bo[list_buf].modifiable = true
     vim.api.nvim_buf_set_lines(list_buf, 0, -1, false, lines)
@@ -288,6 +289,9 @@ local function start_terminal(id, command)
         end
     end
     map(config.keys.list, { "n", "t" }, function() M.focus_list() end, "Focus agent list")
+    map("<Tab>", "n", function() M.focus_list() end, "Focus agent list")
+    map("<C-w>h", "n", function() M.focus_list() end, "Focus agent list")
+    map("<C-w><C-h>", "n", function() M.focus_list() end, "Focus agent list")
     map(config.keys.next, { "n", "t" }, function() M.cycle_slot(1) end, "Next agent terminal")
     map(config.keys.previous, { "n", "t" }, function() M.cycle_slot(-1) end, "Previous agent terminal")
     map(config.keys.escape, "t", [[<C-\><C-n>]], "Leave terminal mode")
@@ -295,7 +299,7 @@ local function start_terminal(id, command)
 
     vim.api.nvim_buf_call(buf, function()
         local opts = {
-            cwd = vim.fn.getcwd(),
+            cwd = term.cwd or vim.fn.getcwd(),
             env = { NVIM_AGENT_DASHBOARD_DIR = state_dir, NVIM_AGENT_SLOT = tostring(id) },
             on_exit = function()
                 vim.schedule(function()
@@ -330,9 +334,20 @@ local function open_slot(id, command, session)
     changing = true
     selected = id
     local term = terminals[id]
+    local old_cwd = term.cwd or vim.fn.getcwd()
+    local requested_cwd = session and vim.fn.fnamemodify(vim.fn.expand(
+        session.project and session.project ~= "" and session.project or vim.fn.getcwd()), ":p")
+    local cwd_changed = requested_cwd and vim.fn.fnamemodify(requested_cwd, ":p")
+        ~= vim.fn.fnamemodify(old_cwd, ":p")
+    term.cwd = requested_cwd or old_cwd
     local spawn = not term.bufnr or not vim.api.nvim_buf_is_valid(term.bufnr) or term.exited
         or (term.job_id and vim.fn.jobwait({ term.job_id }, 0)[1] ~= -1)
+        or cwd_changed
     if spawn then
+        if cwd_changed
+            and term.job_id and term.job_id > 0 and not term.exited then
+            vim.fn.jobstop(term.job_id)
+        end
         term.claimed = command ~= nil
         term.session_id, term.agent, term.title = nil, nil, nil
         states[id] = nil
@@ -357,6 +372,8 @@ local function open_slot(id, command, session)
         start_terminal(id, command)
     elseif command then
         term.claimed = true
+        states[id] = nil
+        vim.fn.delete(state_dir .. "/" .. id .. ".json")
         vim.api.nvim_chan_send(term.job_id, command .. "\n")
     end
     changing = false
@@ -511,12 +528,17 @@ local function show_help()
         "  j / k       Move between rows",
         "  Enter       Open selected slot or session",
         "  1-9         Open a slot (create the next slot)",
-        "  a / x       Add / remove a slot",
+        "  a           Add a slot",
+        "  x           Remove slot / delete recent session",
+        "  Tab / C-l   Return to the active terminal",
+        "  l / Right   Return to the active terminal",
+        "  C-w l       Return to the active terminal",
         "  y           Copy the session id of the row",
         "  D           Delete the selected recent session",
         "  ?           Show this help",
         "  q / Esc     Hide the dashboard", "", "Agent terminal",
         "  " .. (config.keys.list or "") .. "       Focus the sidebar",
+        "  Tab / C-w h Focus sidebar (normal mode)",
         "  " .. (config.keys.next or "") .. " / " .. (config.keys.previous or "") .. "   Cycle slots",
         "  " .. (config.keys.hide or "") .. "       Hide the dashboard",
         "", "Press q or Esc to close",
@@ -614,14 +636,21 @@ local function list_keymaps()
     vim.keymap.set("n", "q", hide, opts)
     vim.keymap.set("n", "<Esc>", hide, opts)
     vim.keymap.set("n", "a", add_slot, opts)
-    vim.keymap.set("n", "x", remove_slot, opts)
+    vim.keymap.set("n", "x", function()
+        local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
+        if row and row.slot then remove_slot()
+        elseif row and row.session then delete_recent_session()
+        else vim.notify("Select a terminal slot or recent session to remove", vim.log.levels.INFO) end
+    end, opts)
     vim.keymap.set("n", "?", show_help, opts)
     vim.keymap.set("n", "<CR>", function()
         local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
         if row and row.session then open_session(row.session)
         elseif row and row.slot then open_slot(row.slot) end
     end, opts)
-    vim.keymap.set("n", "<C-l>", function() open_slot(selected) end, opts)
+    for _, key in ipairs({ "<Tab>", "<C-l>", "l", "<Right>", "<C-w>l", "<C-w><C-l>" }) do
+        vim.keymap.set("n", key, function() open_slot(selected) end, opts)
+    end
     for index = 1, 9 do
         local slot_index = index
         vim.keymap.set("n", tostring(slot_index), function()

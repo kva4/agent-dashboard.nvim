@@ -50,9 +50,16 @@ In a visual-mode Lua mapping, call send_context() directly to use the active
 selection rather than the previous visual marks.
 
 In the sidebar, |j| and |k| move between rows, |Enter| opens a slot or recent
-session, |a| adds a slot, |x| removes one, |y| copies the session id of the
+session, |a| adds a slot, |x| removes a slot or deletes a recent session after
+confirmation, |y| copies the session id of the
 row, |D| deletes the selected recent session after a confirmation, |?| opens
 key help, and |q| hides the dashboard.
+
+Return from the sidebar to the active terminal with <Tab>, <C-l>, l, <Right>,
+or <C-w>l. These focus the terminal and enter terminal mode without opening the
+row under the cursor. From an agent terminal, <C-h> focuses the sidebar in
+terminal or normal mode; <Tab> and <C-w>h also do so in normal mode. Terminal-mode
+<Tab> is passed through to the agent for completion.
 
 ===============================================================================
 3. LUA API                                                  *agent-dashboard-api*

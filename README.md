@@ -91,11 +91,16 @@ depend on ToggleTerm.
 | Where | Keys | Action |
 | --- | --- | --- |
 | Agent terminal | `<C-h>` | Focus the sidebar |
+| Agent terminal (normal mode) | `<Tab>` / `<C-w>h` | Focus the sidebar |
 | Agent terminal | `<M-j>` / `<M-k>` | Next / previous slot (wraps) |
 | Agent terminal | `<C-q>` | Hide dashboard without stopping agents |
 | Sidebar | `j` / `k`, `<CR>` | Select and open a slot or recent session |
 | Sidebar | `1`–`9` | Open a slot (or create the next one) |
-| Sidebar | `a`, `x`, `?` | Add / remove a selected slot / show key help |
+| Sidebar | `<Tab>`, `<C-l>`, `l`, `<Right>`, `<C-w>l` | Return to the active terminal and enter terminal mode |
+| Sidebar | `a`, `?` | Add a slot / show key help |
+| Sidebar | `x` | Remove a terminal slot or delete a recent session (asks for confirmation) |
+| Sidebar | `D` | Delete a recent session (asks for confirmation) |
+| Sidebar | `y` | Copy the session ID of the row |
 | Sidebar | `q` / `<Esc>` | Hide dashboard |
 
 The dashboard starts with an unused shell. You can launch any agent yourself;

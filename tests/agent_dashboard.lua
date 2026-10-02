@@ -206,13 +206,24 @@ vim.api.nvim_set_current_buf(original_buf)
 vim.fn.expand = expand
 vim.fn.delete(health_root, "rf")
 
+local resume_project = vim.fn.tempname()
+vim.fn.mkdir(resume_project, "p")
 local recent_sessions = {
     { harness = "opencode", id = "ses_recent", title = "OpenCode conversation" },
-    { harness = "claude", id = uuid, title = "Claude conversation" },
+    { harness = "claude", id = uuid, title = "Claude conversation", project = resume_project },
     { harness = "opencode", id = "ses_another", title = "Another conversation" },
+    { harness = "opencode", id = "ses_delete", title = "Delete this conversation" },
 }
+local deleted_session
 package.loaded["agent_dashboard.sessions"] = {
     refresh = function(_, callback) callback(recent_sessions) end,
+    delete = function(session, _, callback)
+        deleted_session = session.id
+        for index, entry in ipairs(recent_sessions) do
+            if entry.id == session.id then table.remove(recent_sessions, index); break end
+        end
+        callback(true)
+    end,
 }
 local dashboard = require("agent_dashboard")
 dashboard.setup({ tmux = false, keys = { next = "<M-n>" } })
@@ -290,6 +301,36 @@ local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 assert(lines[6]:find("OC OpenCode", 1, true))
 assert(lines[7]:find("CC Claude", 1, true))
 
+-- Floating panes have explicit navigation, including terminal normal mode.
+local sidebar_win = vim.api.nvim_get_current_win()
+for _, key in ipairs({ "<Tab>", "<C-l>", "l", "<Right>", "<C-w>l", "<C-w><C-l>" }) do
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "xt", false)
+    assert(vim.api.nvim_get_current_buf() == first_buf, key)
+    dashboard.focus_list()
+    assert(vim.api.nvim_get_current_win() == sidebar_win)
+end
+for _, key in ipairs({ "<Tab>", "<C-w>h", "<C-w><C-h>" }) do
+    dashboard.toggle_slot(1)
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "xt", false)
+    assert(vim.api.nvim_get_current_win() == sidebar_win, key)
+end
+
+-- x deletes a recent session, with confirmation, and refreshes the sidebar.
+local confirm = vim.fn.confirm
+vim.fn.confirm = function() return 2 end
+vim.api.nvim_win_set_cursor(0, { 9, 0 })
+vim.api.nvim_feedkeys("x", "xt", false)
+assert(deleted_session == nil)
+vim.fn.confirm = function() return 1 end
+vim.api.nvim_feedkeys("x", "xt", false)
+assert(vim.wait(1000, function()
+    return deleted_session == "ses_delete"
+        and not table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"):find("Delete this", 1, true)
+end))
+vim.fn.confirm = confirm
+
 local sent
 local sent_context
 local chan_send = vim.api.nvim_chan_send
@@ -305,14 +346,21 @@ vim.api.nvim_chan_send = function(job, text)
     return chan_send(job, text)
 end
 vim.api.nvim_win_set_cursor(0, { 6, 0 })
+vim.fn.confirm = function() return 2 end
 vim.api.nvim_feedkeys("x", "xt", false)
+vim.fn.confirm = confirm
 assert(vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]:find("1 terminal", 1, true))
 vim.api.nvim_feedkeys("y", "xt", false)
 assert(vim.fn.getreg('"') == "ses_recent")
+-- A stale disk report must not survive a resume in an existing shell.
+vim.fn.writefile({ vim.json.encode({ slot = 101, time = os.time(), session = "old-session",
+    turn = 1, state = "blocked", agent = "claude" }) }, report_path)
 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
 assert(vim.wait(1000, function() return sent ~= nil end))
 assert(sent == "opencode --session 'ses_recent'\n")
 assert(vim.api.nvim_get_current_buf() == first_buf)
+assert(vim.fn.filereadable(report_path) == 0)
+assert(dashboard.status() == "") -- No status is carried over before the new agent reports.
 dashboard.focus_list()
 assert(vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]:find("1 OpenCode", 1, true))
 dashboard.toggle_slot(2)
@@ -321,9 +369,21 @@ dashboard.focus_list()
 assert(vim.api.nvim_buf_get_lines(buf, 3, 4, false)[1]:find("2 terminal", 1, true))
 vim.api.nvim_feedkeys("jj", "xt", false)
 assert(vim.api.nvim_win_get_cursor(0)[1] == 8)
+local resumed_cwd
+vim.fn.has = function(feature)
+    if feature == "nvim-0.11" then return 0 end
+    return has_version(feature)
+end
+vim.fn.termopen = function(command, options)
+    resumed_cwd = options.cwd
+    return termopen(command, options)
+end
 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
+vim.fn.has, vim.fn.termopen = has_version, termopen
 assert(sent == "claude --resume '" .. uuid .. "'\n")
-assert(vim.api.nvim_get_current_buf() == second_buf)
+assert(vim.fn.fnamemodify(resumed_cwd, ":p") == vim.fn.fnamemodify(resume_project, ":p"))
+assert(not vim.api.nvim_buf_is_valid(second_buf), "Changing project replaces the old shell")
+second_buf = vim.api.nvim_get_current_buf()
 dashboard.focus_list()
 assert(vim.api.nvim_buf_get_lines(buf, 3, 4, false)[1]:find("2 Claude", 1, true))
 vim.api.nvim_win_set_cursor(0, { 9, 0 })
@@ -403,6 +463,7 @@ vim.notify = notify
 vim.api.nvim_get_proc, vim.fn.jobpid = hidden_get_proc, hidden_jobpid
 vim.fn.executable = original_executable
 vim.api.nvim_chan_send = chan_send
+vim.fn.delete(resume_project, "rf")
 
 local tmux_root = vim.fn.tempname()
 local tmux_bin = tmux_root .. "/bin"
