@@ -39,6 +39,11 @@ assert(command[3] == "safe prompt")
 local tools_index
 for index, value in ipairs(command) do if value == "--tools" then tools_index = index end end
 assert(tools_index and command[tools_index + 1] == "")
+assert(not vim.tbl_contains(command, "--model"))
+claude_request.model = "sonnet"
+local model_command = assert(claude.command(claude_request, "safe prompt", capture_id))
+assert(model_command[#model_command - 1] == "--model" and model_command[#model_command] == "sonnet")
+claude_request.model = nil
 assert(helper == claude.parse(vim.json.encode({
     session_id = helper, result = "A note",
 }), helper).helper_id)
@@ -52,6 +57,10 @@ assert(parsed.text == "A note")
 local oc = require("agent_dashboard.capture.opencode")
 local _, oc_env = oc.command(request, "safe prompt")
 assert(oc_env.NVIM_AGENT_SLOT == nil and oc_env.NVIM_AGENT_TOPIC_DIR == nil and oc_env.NVIM == nil)
+local model_request = vim.deepcopy(request)
+model_request.model = "anthropic/claude-sonnet-4-6"
+local _, model_env = oc.command(model_request, "safe prompt")
+assert(vim.json.decode(model_env.OPENCODE_CONFIG_CONTENT).model == model_request.model)
 for _, name in ipairs({ "NVIM_AGENT_SLOT", "NVIM_AGENT_DASHBOARD_DIR", "NVIM_AGENT_TOPIC_DIR", "NVIM" }) do
     assert(vim.env[name] == "source-terminal-identity", "worker isolation must not mutate the parent environment")
     vim.env[name] = inherited[name]
@@ -108,6 +117,37 @@ local function finish(a, text, id)
     vim.wait(100, function() return capture.current().state ~= "capturing" end, 5)
 end
 local function latest() return assert(capture.current()) end
+
+-- Harness settings apply to notes and briefs, with explicit requests taking precedence.
+do
+    local a = adapter()
+    local models = { claude = "sonnet", opencode = "anthropic/claude-sonnet-4-6" }
+    capture.setup({ dir = root .. "/journal-models", models = models,
+        adapters = { opencode = a, claude = a } })
+    for _, source_request in ipairs({ request, claude_request }) do
+        for _, kind in ipairs({ "note", "brief" }) do
+            local input = vim.deepcopy(source_request)
+            input.kind = kind
+            assert(capture.start(input))
+            assert(a.request.model == models[input.source.harness])
+            assert(input.model == nil, "model resolution must not mutate the caller")
+            a.done(nil, "simulated failure")
+            vim.wait(100, function() return latest().state == "failed" end, 5)
+            assert(capture.dismiss())
+        end
+    end
+    local input = vim.deepcopy(request)
+    input.model = "openai/custom-model"
+    assert(capture.start(input))
+    assert(a.request.model == input.model)
+    a.done(nil, "simulated failure")
+    vim.wait(100, function() return latest().state == "failed" end, 5)
+    assert(capture.dismiss())
+    for _, invalid_model in ipairs({ "", "missing-provider", 42 }) do
+        input.model = invalid_model
+        assert(not capture.start(input))
+    end
+end
 
 -- Isolate the worker environment and test the real adapter's jobstart contract.
 do

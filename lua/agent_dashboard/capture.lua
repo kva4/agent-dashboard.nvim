@@ -209,6 +209,15 @@ function M.validate(request)
         return nil, "Capture requires an idle, reported Claude or OpenCode session"
     end
     if vim.fn.isdirectory(source.project) ~= 1 then return nil, "Source project directory no longer exists" end
+    local model = request.model or (config.models and config.models[source.harness])
+    if model ~= nil then
+        if type(model) ~= "string" or vim.trim(model) == "" then
+            return nil, "Capture model must be a non-empty string"
+        end
+        if source.harness == "opencode" and not model:match("^[^/]+/.+$") then
+            return nil, "OpenCode capture model must use provider/model format"
+        end
+    end
     local topics = require("agent_dashboard.topics")
     if not topics.get(request.topic_id) then return nil, "Topic not found: " .. request.topic_id end
     if request.kind == "brief" then
@@ -227,6 +236,7 @@ function M.start(request)
     if not valid then return nil, err end
     sequence = sequence + 1
     local frozen = vim.deepcopy(request)
+    frozen.model = frozen.model or (config.models and config.models[frozen.source.harness])
     local topics = require("agent_dashboard.topics")
     local snapshot
     if frozen.kind == "brief" then

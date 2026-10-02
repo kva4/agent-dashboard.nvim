@@ -25,6 +25,9 @@ See the project README for lazy.nvim setup and Claude/OpenCode reporter setup.
       tmux = true,
       recent_limit = 10,
       notifications = { enabled = true, macos = false },
+      capture_models = {
+        claude = "claude-sonnet-5-5", opencode = "openai/gpt-6.1-sol",
+      },
       topics = { enabled = true, dir = vim.fn.stdpath("data") .. "/agent-dashboard/topics" },
     })
 
@@ -148,6 +151,13 @@ the source terminal and nothing is submitted there. Save findings writes a
 distinct note with project/session provenance. Propose brief is session-based,
 distinct from note consolidation, and must be reviewed and explicitly accepted
 or rejected. Capture is not run automatically after a turn.
+
+Set capture_models.claude and capture_models.opencode in setup() to choose the
+model for both note and brief capture by source harness. Claude accepts a model
+alias or full model ID; OpenCode requires a provider/model identifier. Defaults
+are claude-sonnet-5-5 for Claude and openai/gpt-6.1-sol for OpenCode.
+Consolidation uses the model
+in the selected agent terminal.
 
 The sidebar reports capture state. While active, |X| cancels. Failed results
 offer |o| open, |R| retry, and |d| dismiss; complete results offer |o| open,

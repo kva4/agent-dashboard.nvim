@@ -21,6 +21,10 @@ local config = {
     recent_limit = 10,
     height = 0.78,
     tmux = true,
+    capture_models = {
+        claude = "claude-sonnet-5-5",
+        opencode = "openai/gpt-6.1-sol",
+    },
     notifications = { enabled = true, macos = false },
     keys = { list = "<C-h>", next = "<M-j>", previous = "<M-k>", hide = "<C-q>", escape = "jk" },
     topics = {
@@ -1379,6 +1383,7 @@ function M.setup(opts)
     end
     topic_source.setup(config.topics)
     capture.setup({ dir = config.capture_dir or (vim.fn.stdpath("state") .. "/agent-dashboard/capture"),
+        models = config.capture_models,
         on_change = function()
             refresh_topics()
             render()

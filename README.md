@@ -175,6 +175,22 @@ that cannot be automatically deleted. That case is reported explicitly.
 Capture has been checked with Claude Code 2.1.286 and OpenCode 1.18.30. OpenCode
 capture also uses `curl` for its private local server and `ps` for crash recovery.
 
+Choose the model for both note and brief capture by source harness:
+
+```lua
+require("agent_dashboard").setup({
+    capture_models = {
+        claude = "claude-sonnet-5-5",
+        opencode = "openai/gpt-6.1-sol",
+    },
+})
+```
+
+Claude accepts a model alias or full model ID supported by Claude Code. OpenCode
+uses `provider/model` identifiers from your configured providers. The values
+shown above are the plugin defaults. These settings apply to
+isolated capture; consolidation uses the model in the selected agent terminal.
+
 The dashboard shows capture state in the sidebar. While active, `X` cancels;
 after failure, `o` opens output, `e` shows diagnostics, `R` retries, and `d`
 dismisses; after success, `o` opens a note, `r` reviews a brief proposal, and `d`

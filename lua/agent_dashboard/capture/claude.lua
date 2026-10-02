@@ -43,10 +43,15 @@ end
 function M.command(request, prompt, capture_id)
     local helper, err = M.prepare(request, capture_id)
     if not helper then return nil, err end
-    return { "claude", "-p", prompt, "--resume", request.source.session, "--fork-session",
+    local command = { "claude", "-p", prompt, "--resume", request.source.session, "--fork-session",
         "--session-id", helper, "--name", "capture:" .. capture_id, "--output-format", "json",
         "--permission-prompts", "none", "--tools", "", "--safe-mode", "--settings",
-        vim.json.encode({ disableAllHooks = true }) }, environment(), helper
+        vim.json.encode({ disableAllHooks = true }) }
+    if request.model then
+        command[#command + 1] = "--model"
+        command[#command + 1] = request.model
+    end
+    return command, environment(), helper
 end
 
 function M.start(request, prompt, ownership_callback, done)
