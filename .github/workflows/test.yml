@@ -26,3 +26,5 @@ jobs:
         run: nvim --headless -u NONE -i NONE -l tests/agent_dashboard.lua
       - name: Check reporter syntax
         run: bash -n extras/claude/agent-dashboard-report.sh && node --check extras/opencode/agent-dashboard-tui.js
+      - name: Run OpenCode reporter tests
+        run: node --test tests/opencode_reporter.mjs

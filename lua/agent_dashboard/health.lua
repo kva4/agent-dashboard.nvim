@@ -63,11 +63,35 @@ function M.check()
 
     local config_dir = vim.fn.expand("~/.config/opencode")
     local plugin_path = config_dir .. "/agent-dashboard-tui.js"
-    local tui_config = read(config_dir .. "/tui.jsonc") or read(config_dir .. "/tui.json")
+    -- V2's global CLI config takes precedence over legacy TUI configuration.
+    local cli_config = read(config_dir .. "/cli.json")
+    local tui_config = cli_config or read(config_dir .. "/tui.jsonc") or read(config_dir .. "/tui.json")
+    local cli_reporter
+    if cli_config then
+        local ok, decoded = pcall(vim.json.decode, cli_config)
+        for _, entry in ipairs(ok and type(decoded) == "table" and decoded.plugins or {}) do
+            local target = type(entry) == "table" and entry.package or entry
+            if type(target) == "string" and target:sub(1, 1) ~= "-" then
+                target = target:gsub("^file://", "")
+                if target:sub(1, 1) ~= "/" then target = config_dir .. "/" .. target end
+                local entrypoint = read(target .. "/tui.js")
+                if entrypoint and entrypoint:find("agent-dashboard-tui.js", 1, true)
+                    and vim.fn.filereadable(target .. "/agent-dashboard-tui.js") == 1 then
+                    cli_reporter = true
+                end
+            end
+        end
+    end
     if not tui_config then
         vim.health.warn("OpenCode TUI config not found under " .. config_dir)
+    elseif cli_config then
+        if cli_reporter then
+            vim.health.ok("OpenCode TUI reporter is configured")
+        else
+            vim.health.warn("OpenCode v2 reporter is not configured: cli.json plugins must reference the extras/opencode directory, not agent-dashboard-tui.js")
+        end
     elseif not tui_config:find("agent-dashboard-tui.js", 1, true) then
-        vim.health.warn("OpenCode TUI plugin is not configured in " .. config_dir)
+        vim.health.warn("OpenCode TUI plugin is not configured in " .. config_dir .. " (use cli.json plugins for OpenCode v2)")
     elseif vim.fn.filereadable(plugin_path) ~= 1 then
         vim.health.warn("OpenCode config references the reporter, but " .. plugin_path .. " is missing")
     else

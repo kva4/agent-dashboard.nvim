@@ -147,19 +147,26 @@ recognizing sessions started manually in an existing terminal.
 
 ### OpenCode
 
-The TUI-specific reporter is in `extras/opencode/agent-dashboard-tui.js`.
-Copy it to `~/.config/opencode/agent-dashboard-tui.js`, then add it to your
-`~/.config/opencode/tui.jsonc` plugin array (preserving other plugins):
+The OpenCode v2 CLI plugin is the **directory** `extras/opencode`, containing
+`tui.js`, `agent-dashboard-tui.js`, and `package.json`. Copy the whole directory
+to `~/.config/opencode/agent-dashboard`, then add it to your
+`~/.config/opencode/cli.json` plugins array (preserving other settings):
 
 ```jsonc
 {
-  "plugin": ["./agent-dashboard-tui.js"]
+  "$schema": "https://opencode.ai/v2/cli.json",
+  "plugins": ["./agent-dashboard"]
 }
 ```
 
 This is a TUI plugin: the selected session belongs to the terminal that owns
 it. A server-wide plugin cannot reliably identify that terminal. Restart
 OpenCode after changing its TUI plugin configuration.
+OpenCode v2 does not reload edits to the old `tui.jsonc`; register the reporter
+in `cli.json` even if the legacy file still exists.
+Alternatively, register the absolute path to your checkout's `extras/opencode`
+directory. Do not register `agent-dashboard-tui.js` directly: v2 resolves local
+CLI plugins through the directory's `tui.js` entrypoint.
 
 ### Claude Code
 

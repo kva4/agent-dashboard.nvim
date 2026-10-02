@@ -1,7 +1,8 @@
 // TUI-scoped reporter: attributes the selected OpenCode session to its Neovim slot.
-// Add this file to OpenCode's tui.jsonc "plugin" list (see README.md).
+// Add this file to OpenCode v2's cli.json "plugins" list (see README.md).
 import { readFile, writeFile, rename, unlink } from "node:fs/promises";
 import path from "node:path";
+import { Plugin } from "@opencode/plugin/tui";
 
 const slot = Number(process.env.NVIM_AGENT_SLOT);
 const directory = process.env.NVIM_AGENT_DASHBOARD_DIR;
@@ -62,7 +63,7 @@ function reporter() {
   };
 }
 
-// OpenCode v1 TUI hooks. `setup` runs in the TUI, not the shared server,
+// OpenCode v2 CLI plugin hooks. `setup` runs in the TUI, not the shared server,
 // so the selected conversation can be attributed to this terminal slot.
 function setup(api) {
   if (!enabled || !api?.data?.listen || !api?.ui?.router) return;
@@ -98,7 +99,10 @@ function setup(api) {
   function reconcile() {
     if (!selected) return;
     const next = new Map();
-    for (const id of [selected, ...(api.data.session.family(selected) ?? [])]) {
+    const family = new Set([selected, ...(api.data.session.family(selected) ?? [])]);
+    // A creation event can arrive before the session-family cache is updated.
+    for (const id of parents.keys()) if (root(id) === selected) family.add(id);
+    for (const id of family) {
       for (const kind of ["permission", "form"]) {
         const items = api.data.session[kind].list(id);
         if (!items) {
@@ -174,38 +178,4 @@ function setup(api) {
   };
 }
 
-// OpenCode v2 uses a TUI plugin entrypoint. Keep the same per-TUI ownership.
-async function tui(api) {
-  if (!enabled) return;
-  const output = reporter();
-  const route = () => api.route.current;
-  const turns = new Map();
-  const active = new Map();
-  function sync() {
-    const current = route();
-    const id = current?.name === "session" ? current.params?.sessionID : undefined;
-    const session = id && api.state.session.get(id);
-    if (!session || session.parentID) {
-      output.write("unknown", "none", 0);
-      return;
-    }
-    const blocked = api.state.session.permission(id).length || api.state.session.question(id).length;
-    const status = api.state.session.status(id);
-    const state = blocked ? "blocked" : status?.type === "busy" || status?.type === "retry" ? "working" : "idle";
-    if (state === "working") active.set(id, true);
-    if (state === "idle" && active.get(id)) {
-      turns.set(id, (turns.get(id) ?? 0) + 1);
-      active.delete(id);
-    }
-    output.write(state, id, turns.get(id) ?? 0);
-  }
-  const timer = setInterval(sync, 300);
-  timer.unref?.();
-  sync();
-  api.lifecycle.onDispose(() => {
-    clearInterval(timer);
-    output.dispose();
-  });
-}
-
-export default { id: "nvim.agent-dashboard", setup, tui };
+export default Plugin.define({ id: "nvim.agent-dashboard", setup });

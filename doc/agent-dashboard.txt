@@ -89,6 +89,24 @@ also set heartbeat=true. Hook-based reports remain valid until their process
 exits or the session ends. The bundled Claude hook setup limits blocked reports
 to permission_prompt notifications.
 
+OpenCode v2 setup differs from the legacy tui.json(c) setup. Copy the entire
+extras/opencode directory (including tui.js, agent-dashboard-tui.js, and
+package.json) to ~/.config/opencode/agent-dashboard, then add it to the plugins array in
+~/.config/opencode/cli.json, preserving other settings: >
+  {
+    "$schema": "https://opencode.ai/v2/cli.json",
+    "plugins": ["./agent-dashboard"]
+  }
+<
+The bundled reporter uses the OpenCode v2 CLI plugin API. Registering it only
+in the old tui.json(c) does not activate it when cli.json already exists.
+Register the plugin directory, not the standalone agent-dashboard-tui.js file:
+v2 requires the directory's tui.js entrypoint. An absolute path to a checkout's
+extras/opencode directory can also be used instead of copying it.
+Quit and restart OpenCode in dashboard terminals after changing the reporter
+or its registration. Pending permissions and forms in sub-agent sessions also
+mark their owning session as blocked.
+
 ===============================================================================
 5. HEALTH                                                  *agent-dashboard-health*
 
