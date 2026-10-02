@@ -1,0 +1,8 @@
+{
+  "name": "nvim-agent-dashboard",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./tui": "./tui.js"
+  }
+}

@@ -198,6 +198,21 @@ assert(vim.wait(5000, function()
         and report:find("OpenCode TUI reporter is configured", 1, true)
 end), report)
 assert(not report:find('No healthcheck found for "agent_dashboard"', 1, true))
+-- A legacy registration must not mask a missing or invalid v2 entrypoint.
+vim.fn.writefile({ '{ "plugins": ["./agent-dashboard-tui.js"] }' }, opencode_config_dir .. "/cli.json")
+vim.cmd("checkhealth agent_dashboard")
+assert(vim.wait(5000, function()
+    return health_output():find("must reference the extras/opencode directory", 1, true)
+end))
+vim.fn.mkdir(opencode_config_dir .. "/agent-dashboard", "p")
+vim.fn.writefile({ 'export { default } from "./agent-dashboard-tui.js";' }, opencode_config_dir .. "/agent-dashboard/tui.js")
+vim.fn.writefile({ "export default {};" }, opencode_config_dir .. "/agent-dashboard/agent-dashboard-tui.js")
+vim.fn.writefile({ '{ "plugins": ["./agent-dashboard"] }' }, opencode_config_dir .. "/cli.json")
+vim.cmd("checkhealth agent_dashboard")
+assert(vim.wait(5000, function()
+    return health_output():find("OpenCode TUI reporter is configured", 1, true)
+end))
+health_win = vim.api.nvim_get_current_win()
 for _, win in ipairs(vim.api.nvim_list_wins()) do
     if win ~= health_win then vim.api.nvim_win_close(win, true) end
 end
