@@ -73,7 +73,7 @@ local function prompt(job)
     local text = "Return only Markdown content, without frontmatter or a surrounding code fence. "
         .. "Do not use tools, read files, or modify anything. The plugin saves your returned text.\n"
         .. "Base findings only on the conversation inherited from the source investigation. "
-        .. "Separate confirmed behavior, hypotheses, proposed changes, and open questions. "
+        .. "Preserve uncertainty and qualifications where the source conversation expresses them. "
         .. "Include supporting file paths and contracts where the source established them. "
         .. "Do not invent connections to the destination topic or import other projects' claims.\n"
         .. "Destination topic (a storage label, not additional evidence): " .. job.topic_title .. "\n"
@@ -89,8 +89,29 @@ local function prompt(job)
             .. require("agent_dashboard.topics").brief_max_lines() .. " lines.\n"
             .. "Current brief supplied explicitly:\n<current-brief>\n" .. job.snapshot.text .. "\n</current-brief>"
     else
-        text = text .. "Distill one self-contained note with a # Title and concise findings, decisions, "
-            .. "and open questions. The topic brief and other notes are not evidence for this note."
+        text = text .. "Create one self-contained explanatory note with a # Title describing its subject. "
+            .. "Organize the selected material around the user's questions or requests, or meaningful aspects of its subject, "
+            .. "using descriptive headings. Combine related questions and follow-up elaborations into "
+            .. "coherent explanations rather than reproducing the conversation turn by turn. "
+            .. "Preserve useful answers about how things work and why, including mechanisms, dependencies, "
+            .. "examples, and additional context established through follow-up questions. "
+            .. "Use paragraphs, bullets, or question-based headings as appropriate to the content. "
+            .. "Do not impose generic sections such as 'Confirmed behavior', 'Hypotheses', 'Proposed changes', "
+            .. "or 'Open questions'. Include decisions, proposals, or unanswered questions only if they were "
+            .. "actually discussed and are relevant; do not invent them to fill a template. "
+            .. "The topic brief and other notes are not evidence for this note."
+        if req.focus and vim.trim(req.focus) ~= "" then
+            text = text .. "\n\nScope for this note: the requested focus below is the selection boundary, "
+                .. "not merely an emphasis within a summary of the whole session. "
+                .. "If the focus lists several questions or subjects, cover only those items and their relevant "
+                .. "answers and follow-up elaborations. Do not cover other questions from the session. "
+                .. "Include additional context only when it is necessary to explain a selected item, and keep "
+                .. "that context minimal. Sharing a project, service, or broad topic is not sufficient reason "
+                .. "to include another finding. Apply this boundary to the title, every heading, paragraph, "
+                .. "bullet, and example. Before returning the note, remove anything outside it. "
+                .. "If a selected item was not answered, say that briefly instead of substituting unrelated material.\n"
+                .. "Requested focus for this note:\n" .. vim.trim(req.focus)
+        end
     end
     return text
 end
