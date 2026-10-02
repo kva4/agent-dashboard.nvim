@@ -42,6 +42,18 @@ assert(notes[1].source.project == project)
 assert(not notes[1].consolidated)
 assert(topics.list()[1].new_notes == 1)
 
+local capture_snapshot = assert(topics.capture_snapshot("billing-migration"))
+local capture_path = assert(topics.capture_save("billing-migration", "brief", "# Captured brief", {
+    harness = "claude", session = "original-session", project = project,
+}, capture_snapshot))
+assert(capture_path)
+local proposal_text = table.concat(vim.fn.readfile(capture_path), "\n")
+assert(proposal_text:find('session: "original%-session"'))
+assert(vim.fn.filereadable(root .. "/topics/billing-migration/brief.proposed.notes.json") == 1)
+assert(vim.json.decode(table.concat(vim.fn.readfile(root .. "/topics/billing-migration/brief.proposed.notes.json"), "\n"))[1] == nil)
+assert(topics.reject_proposal("billing-migration"))
+assert(vim.fn.filereadable(root .. "/topics/billing-migration/brief.proposed.base.sha256") == 0)
+
 local brief = topics.brief_path("billing-migration")
 local original_brief = table.concat(vim.fn.readfile(brief), "\n")
 vim.fn.writefile({ "# Rejected proposal" }, root .. "/topics/billing-migration/brief.proposed.md")

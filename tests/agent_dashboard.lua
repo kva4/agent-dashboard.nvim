@@ -210,9 +210,18 @@ local recent_sessions = {
     { harness = "opencode", id = "ses_recent", title = "OpenCode conversation" },
     { harness = "claude", id = uuid, title = "Claude conversation" },
     { harness = "opencode", id = "ses_another", title = "Another conversation" },
+    { harness = "opencode", id = "ses_delete", title = "Delete this conversation" },
 }
+local deleted_session
 package.loaded["agent_dashboard.sessions"] = {
     refresh = function(_, callback) callback(recent_sessions) end,
+    delete = function(session, _, callback)
+        deleted_session = session.id
+        for index, entry in ipairs(recent_sessions) do
+            if entry.id == session.id then table.remove(recent_sessions, index); break end
+        end
+        callback(true)
+    end,
 }
 local dashboard = require("agent_dashboard")
 dashboard.setup({ tmux = false, topics = false, keys = { next = "<M-n>" } })
@@ -290,6 +299,36 @@ local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
 assert(lines[6]:find("OC OpenCode", 1, true))
 assert(lines[7]:find("CC Claude", 1, true))
 
+-- Floating panes have explicit navigation, including terminal normal mode.
+local sidebar_win = vim.api.nvim_get_current_win()
+for _, key in ipairs({ "<Tab>", "<C-l>", "l", "<Right>", "<C-w>l", "<C-w><C-l>" }) do
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "xt", false)
+    assert(vim.api.nvim_get_current_buf() == first_buf, key)
+    dashboard.focus_list()
+    assert(vim.api.nvim_get_current_win() == sidebar_win)
+end
+for _, key in ipairs({ "<Tab>", "<C-w>h", "<C-w><C-h>" }) do
+    dashboard.toggle_slot(1)
+    vim.cmd("stopinsert")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes(key, true, false, true), "xt", false)
+    assert(vim.api.nvim_get_current_win() == sidebar_win, key)
+end
+
+-- x deletes a recent session, with confirmation, and refreshes the sidebar.
+local confirm = vim.fn.confirm
+vim.fn.confirm = function() return 2 end
+vim.api.nvim_win_set_cursor(0, { 9, 0 })
+vim.api.nvim_feedkeys("x", "xt", false)
+assert(deleted_session == nil)
+vim.fn.confirm = function() return 1 end
+vim.api.nvim_feedkeys("x", "xt", false)
+assert(vim.wait(1000, function()
+    return deleted_session == "ses_delete"
+        and not table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"):find("Delete this", 1, true)
+end))
+vim.fn.confirm = confirm
+
 local sent
 local sent_context
 local chan_send = vim.api.nvim_chan_send
@@ -305,7 +344,9 @@ vim.api.nvim_chan_send = function(job, text)
     return chan_send(job, text)
 end
 vim.api.nvim_win_set_cursor(0, { 6, 0 })
+vim.fn.confirm = function() return 2 end
 vim.api.nvim_feedkeys("x", "xt", false)
+vim.fn.confirm = confirm
 assert(vim.api.nvim_buf_get_lines(buf, 2, 3, false)[1]:find("1 terminal", 1, true))
 vim.api.nvim_feedkeys("y", "xt", false)
 assert(vim.fn.getreg('"') == "ses_recent")

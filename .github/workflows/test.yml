@@ -28,5 +28,7 @@ jobs:
           nvim --headless -u NONE -i NONE -l tests/topics.lua
           nvim --headless -u NONE -i NONE -l tests/topics_dashboard.lua
           nvim --headless -u NONE -i NONE -l tests/topics_delivery.lua
+          nvim --headless -u NONE -i NONE -l tests/capture.lua
+          nvim --headless -u NONE -i NONE -l tests/capture_ui.lua
       - name: Check reporter syntax
         run: bash -n extras/claude/agent-dashboard-report.sh && node --check extras/opencode/agent-dashboard-tui.js

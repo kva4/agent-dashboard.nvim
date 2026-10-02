@@ -17,7 +17,7 @@ vim.fn.termopen = function(command, options)
     terminal_options = options
     return termopen(command, options)
 end
-dashboard.setup({ tmux = false, topics = {
+dashboard.setup({ tmux = false, capture_dir = topic_dir .. "/capture-journal", topics = {
     dir = topic_dir,
     prompts = { distill = "Distill {{title}} into {{note_path}}. Metadata:\n{{source_frontmatter}}" },
 } })
@@ -33,20 +33,58 @@ vim.fn.has, vim.fn.termopen = has, termopen
 dashboard.toggle_slot(1)
 dashboard.focus_list()
 local buffer = vim.api.nvim_get_current_buf()
-local original_chan_send, distill_prompt = vim.api.nvim_chan_send
-vim.api.nvim_chan_send = function(_, text) distill_prompt = text; return true end
+local original_chan_send = vim.api.nvim_chan_send
+local sends = 0
+vim.api.nvim_chan_send = function() sends = sends + 1; return true end
 dashboard.distill("dashboard-notes")
-assert(distill_prompt == nil) -- A topic prompt must not be pasted into an unclaimed shell.
+assert(sends == 0, "capture never sends a terminal prompt")
 local report_file = terminal_options.env.NVIM_AGENT_DASHBOARD_DIR .. "/101.json"
 vim.fn.writefile({ vim.json.encode({ slot = 101, time = os.time(), session = "test-session",
     turn = 0, state = "idle", agent = "claude" }) }, report_file)
 assert(vim.wait(1600, function() return dashboard.status() == "○" end))
+local capture_ui = require("agent_dashboard.capture_ui")
+local function dialog_key(key)
+    local active = assert(capture_ui._dialog())
+    for _, map in ipairs(vim.api.nvim_buf_get_keymap(active.buf, "n")) do
+        if map.lhs == key then return map.callback() end
+    end
+    error("Missing capture key " .. key)
+end
 dashboard.distill("dashboard-notes")
-assert(distill_prompt:find("Distill Dashboard notes into", 1, true))
-assert(distill_prompt:find("source:", 1, true) and distill_prompt:find("project:", 1, true))
+local dialog = capture_ui._dialog()
+assert(dialog and dialog.request.source.session == "test-session")
+assert(dialog.request.source.harness == "claude" and dialog.request.source.project)
+assert(sends == 0, "idle capture still does not send to terminal")
+dialog_key("q")
 dashboard.distill("dashboard-notes", "permission checks only")
-assert(distill_prompt:find("Distill Dashboard notes into", 1, true)) -- Custom templates retain focus too.
-assert(distill_prompt:find("Requested focus from the user:\npermission checks only", 1, true))
+dialog = capture_ui._dialog()
+assert(dialog and dialog.focus == "permission checks only")
+assert(dialog.request.source.session == "test-session")
+assert(sends == 0, "focused capture does not paste to terminal")
+dialog_key("q")
+dashboard.focus_list()
+-- Exercise the dashboard action on a slot row, then the actual buffer-local
+-- terminal shortcut and submission focus restoration without a model request.
+vim.api.nvim_win_set_cursor(0, { 3, 0 })
+vim.api.nvim_feedkeys("c", "xt", false)
+assert(capture_ui._dialog().request.source.slot_id == 101)
+dialog_key("q")
+assert(vim.api.nvim_get_current_buf() == shell_buffer, "expected source buffer " .. shell_buffer .. ", got " .. vim.api.nvim_get_current_buf() .. ": " .. vim.api.nvim_buf_get_name(0))
+local terminal_map = vim.fn.maparg("<M-c>", "t", false, true)
+assert(type(terminal_map.callback) == "function", "terminal capture shortcut is buffer-local")
+local before_buffers = #vim.api.nvim_list_bufs()
+terminal_map.callback()
+assert(capture_ui._dialog() and vim.bo.buftype == "nofile")
+local capture = require("agent_dashboard.capture")
+local original_start, submitted = capture.start
+capture.start = function(request) submitted = request; return { state = "capturing", request = request } end
+dialog_key("s")
+capture.start = original_start
+assert(submitted and submitted.source.session == "test-session")
+assert(vim.api.nvim_get_current_buf() == shell_buffer, "submission restores the source terminal buffer")
+assert(#vim.api.nvim_list_bufs() == before_buffers, "capture does not create another terminal")
+assert(sends == 0, "dashboard and terminal capture actions never send to source")
+dashboard.focus_list()
 vim.api.nvim_chan_send = original_chan_send
 local content = table.concat(vim.api.nvim_buf_get_lines(buffer, 0, -1, false), "\n")
 assert(content:find("TOPICS", 1, true))

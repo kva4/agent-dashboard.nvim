@@ -18,6 +18,7 @@ fi
 input="$(cat 2>/dev/null || true)"
 session="$(printf '%s' "$input" | jq -r '.session_id // "unknown"' 2>/dev/null || echo unknown)"
 source="$(printf '%s' "$input" | jq -r '.source // "startup"' 2>/dev/null || echo startup)"
+project="$(printf '%s' "$input" | jq -r 'select(.cwd | type == "string" and startswith("/")) | .cwd' 2>/dev/null || true)"
 
 # Hook commands can be launched through one or more shell wrappers. Attribute
 # the report to Claude itself so Neovim does not mistake the short-lived hook
@@ -66,11 +67,12 @@ jq -n \
     --argjson slot "$NVIM_AGENT_SLOT" \
     --arg agent claude \
     --arg session "$session" \
+    --arg project "$project" \
     --argjson turn "$turn" \
     --argjson pid "$claude_pid" \
     --arg state "$state" \
     --argjson time "$(date +%s)" \
-    '{slot: $slot, time: $time, session: $session, turn: $turn, state: $state, agent: $agent} + (if $pid > 1 then {pid: $pid} else {} end)' \
+    '{slot: $slot, time: $time, session: $session, turn: $turn, state: $state, agent: $agent} + (if $project != "" then {project: $project} else {} end) + (if $pid > 1 then {pid: $pid} else {} end)' \
     > "$tmp"
 mv "$tmp" "$state_file"
 

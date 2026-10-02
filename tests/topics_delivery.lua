@@ -3,6 +3,19 @@ vim.o.lines, vim.o.columns = 45, 120
 local root = vim.fn.tempname()
 local project = root .. "/other-project"
 vim.fn.mkdir(project, "p")
+-- Claude hook reports use the hook's source cwd, not the terminal's startup cwd.
+local report_dir = root .. "/reports"
+vim.fn.mkdir(report_dir, "p")
+local old_dir, old_slot = vim.env.NVIM_AGENT_DASHBOARD_DIR, vim.env.NVIM_AGENT_SLOT
+vim.env.NVIM_AGENT_DASHBOARD_DIR, vim.env.NVIM_AGENT_SLOT = report_dir, "109"
+local reporter = vim.fn.getcwd() .. "/extras/claude/agent-dashboard-report.sh"
+local report = vim.fn.system({ "bash", reporter, "start" }, vim.json.encode({
+    session_id = "cwd-session", source = "startup", cwd = project,
+}))
+assert(vim.v.shell_error == 0, report)
+local source_state = vim.json.decode(table.concat(vim.fn.readfile(report_dir .. "/109.json")))
+assert(source_state.project == project)
+vim.env.NVIM_AGENT_DASHBOARD_DIR, vim.env.NVIM_AGENT_SLOT = old_dir, old_slot
 local topics = require("agent_dashboard.topics")
 topics.setup({ dir = root .. "/topics" })
 assert(topics.create("delivery"))
@@ -29,7 +42,8 @@ end
 vim.api.nvim_get_proc_children = function() return {} end
 vim.api.nvim_chan_send = function(_, text) sent[#sent + 1] = text end
 local dashboard = require("agent_dashboard")
-dashboard.setup({ tmux = false, topics = { dir = topics.directory(), opencode_prompt_timeout_ms = 2200 } })
+dashboard.setup({ tmux = false, topics = { dir = topics.directory(), opencode_prompt_timeout_ms = 2200 },
+    capture_dir = root .. "/capture" })
 dashboard.toggle()
 assert(dashboard.attach_topic(1, "delivery"))
 local function open_recent(id)
@@ -105,46 +119,40 @@ assert(reads == 0)
 vim.fn.readfile = readfile
 dashboard.toggle_slot(1)
 dashboard.distill("delivery")
-local distill = sent[#sent]
-assert(distill:match("^(.-)\27%[200~") ==
-    "Please write this session's findings as a note using the pasted instructions. ")
-assert(distill:find("This is my explicit request", 1, true))
-assert(distill:find("does not need to have discussed the topic", 1, true))
-assert(distill:find("Do not invent a connection", 1, true))
-assert(distill:find("Write the note now", 1, true))
-assert(not distill:find(topics.brief_path("delivery"), 1, true))
-assert(distill:find("Use only findings and evidence already discussed or investigated in this session", 1, true))
-assert(distill:find("Do not read the topic brief or other topic notes", 1, true))
-assert(distill:sub(-6) == "\27[201~")
+local capture_ui = require("agent_dashboard.capture_ui")
+local function check_capture(kind, focus)
+    local dialog = capture_ui._dialog()
+    assert(dialog and vim.api.nvim_win_is_valid(dialog.win))
+    local text = table.concat(vim.api.nvim_buf_get_lines(dialog.buf, 0, -1, false), "\n")
+    assert(text:find("Source: opencode / ses_first", 1, true))
+    assert(text:find("Topic:.*delivery"))
+    assert(dialog.request.topic_id == "delivery")
+    if focus ~= nil then assert(dialog.focus == focus) end
+    local before = #sent
+    local close
+    for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(dialog.buf, "n")) do
+        if mapping.lhs == "q" then close = mapping.callback end
+    end
+    assert(type(close) == "function")
+    close()
+    dashboard.focus_list()
+    return before
+end
+local before = check_capture("note", nil)
+assert(#sent == before, "capture dialog must not send to source terminal")
 vim.cmd("AgentDashboard brief delivery")
-local brief_prompt = sent[#sent]
-assert(brief_prompt:match("^(.-)\27%[200~") ==
-    "Please draft or update the topic brief using the pasted instructions. ")
-assert(brief_prompt:find("feature description, requirements, and decisions in this conversation", 1, true))
-assert(brief_prompt:find("do not edit " .. topics.brief_path("delivery") .. " directly", 1, true))
-assert(brief_prompt:find("do not change notes or their consolidated flags", 1, true))
-local snapshot = vim.json.decode(table.concat(vim.fn.readfile(
-    topics.get("delivery").dir .. "/brief.proposed.notes.json"), "\n"))
-assert(#snapshot == 0)
-assert(brief_prompt:sub(-6) == "\27[201~")
+before = check_capture("brief", nil)
+assert(#sent == before, "brief capture dialog must not send to source terminal")
 vim.cmd("AgentDashboard distill delivery user state API responses and permissions")
-local focused_note = sent[#sent]
-assert(focused_note:find("Requested focus from the user:\nuser state API responses and permissions", 1, true))
-assert(focused_note:find("Exclude unrelated conversation topics", 1, true))
-assert(focused_note:find(topics.get("delivery").dir .. "/notes/", 1, true))
-assert(focused_note:sub(-6) == "\27[201~")
+check_capture("note", "user state API responses and permissions")
 vim.cmd("AgentDashboard distill -- token creation and expiration")
-assert(sent[#sent]:find("Requested focus from the user:\ntoken creation and expiration", 1, true))
-assert(sent[#sent]:find(topics.get("delivery").dir .. "/notes/", 1, true))
+check_capture("note", "token creation and expiration")
 vim.cmd("AgentDashboard brief -- clarify transfer acceptance criteria")
-assert(sent[#sent]:find("Requested focus from the user:\nclarify transfer acceptance criteria", 1, true))
-assert(sent[#sent]:find("Preserve accurate existing sections outside this focus", 1, true))
+check_capture("brief", "clarify transfer acceptance criteria")
 vim.cmd("AgentDashboard brief topic delivery system responsibilities")
-assert(sent[#sent]:find("Requested focus from the user:\nsystem responsibilities", 1, true))
+check_capture("brief", "system responsibilities")
 dashboard.distill("delivery", "   ")
-assert(not sent[#sent]:find("Requested focus from the user:", 1, true))
-assert(sent[#sent]:match("^(.-)\27%[200~") ==
-    "Please write this session's findings as a note using the pasted instructions. ")
+check_capture("note", nil)
 vim.cmd("AgentDashboard consolidate delivery")
 assert(sent[#sent]:match("^(.-)\27%[200~") ==
     "Please consolidate the topic notes using the pasted instructions. ")

@@ -77,7 +77,7 @@ dashboard.setup({
     -- claude_projects = vim.fn.expand("~/.claude/projects"),
     keys = {
         list = "<C-h>", next = "<M-j>", previous = "<M-k>",
-        hide = "<C-q>", escape = "jk",
+        hide = "<C-q>", escape = "jk", capture = "<M-c>",
     },
 })
 ```
@@ -91,11 +91,14 @@ depend on ToggleTerm.
 | Where | Keys | Action |
 | --- | --- | --- |
 | Agent terminal | `<C-h>` | Focus the sidebar |
+| Agent terminal (normal mode) | `<Tab>` / `<C-w>h` | Focus the sidebar |
 | Agent terminal | `<M-j>` / `<M-k>` | Next / previous slot (wraps) |
 | Agent terminal | `<C-q>` | Hide dashboard without stopping agents |
 | Sidebar | `j` / `k`, `<CR>` | Select and open a slot or recent session |
 | Sidebar | `1`–`9` | Open a slot (or create the next one) |
-| Sidebar | `a`, `x`, `y`, `D`, `C`, `t`, `n`, `?` | Add / remove slot / copy session id / `D` deletes a session or distills a topic / consolidate topic / attach or detach topic / browse topic notes / show help |
+| Sidebar | `<Tab>`, `<C-l>`, `l`, `<Right>`, `<C-w>l` | Return to the active terminal and enter terminal mode |
+| Sidebar | `x` | Remove a terminal slot or delete a recent session (asks for confirmation) |
+| Sidebar | `a`, `y`, `D`, `C`, `t`, `n`, `c`, `?` | Add slot / copy session id / delete recent session or save topic note / consolidate topic / attach or detach topic / browse topic notes / capture findings for the selected source / show help |
 | Sidebar | `q` / `<Esc>` | Hide dashboard |
 
 The dashboard starts with an unused shell. You can launch any agent yourself;
@@ -141,34 +144,48 @@ to the selected slot with:
 :AgentDashboard topic attach billing-migration
 ```
 
-The sidebar shows topics and their unreviewed note counts. Press `t` on a slot to
-attach or detach a topic, `Enter` on a topic to edit its brief, `n` to browse its
-notes, `D` to paste a distillation prompt into the selected agent terminal, and
-`C` to paste a consolidation prompt. Press Enter to submit either prompt. Review proposals with
-`:AgentDashboard consolidate review billing-migration`, then accept or reject
-them explicitly. `:AgentDashboard note [topic]` saves the current selection or
-range with its project and session source.
+From an agent terminal, press `<M-c>` (Alt-C; configurable as
+`keys.capture`, default `<M-c>`) to open capture for that session. In the
+dashboard, press `c` on a slot row to capture from that slot (using its attached
+topic when available), or on a topic row to capture that topic from the currently
+selected slot. Choose a destination topic, enter
+optional focus text, then select **Save findings** or **Propose brief**. Capture
+requires a session that has an idle status report; an unreported shell or a
+working/unknown session is not eligible. The capture runs separately from the
+agent terminal, so its response is not pasted into the conversation and is not
+submitted as a prompt there. The initial release does not start capture
+automatically after an agent turn.
 
-To draft or improve a brief from a session that contains your feature description,
-select that agent slot and run `:AgentDashboard brief billing-migration`. Submit
-the pasted prompt, then use `:AgentDashboard brief review billing-migration`
-and `:AgentDashboard brief accept billing-migration` (or `reject`). This updates
-the feature overview from session context without marking investigation notes
-consolidated. Use `consolidate` later to fold those notes into the brief.
+Save findings creates a distinct note with source project/session provenance.
+Propose brief makes a session-based proposal distinct from note consolidation;
+review the proposal and explicitly accept or reject it. Optional focus text
+narrows the requested subject. Each capture makes an additional model request.
+The capture helper is disposable: known, journaled helper sessions are filtered
+from recent sessions and cleaned up after capture. If cleanup cannot be
+confirmed, the helper is retained for startup reconciliation rather than
+guessing by recency. A failed topic-file save keeps generated output at a
+recoverable local path before deleting the helper. Cleanup problems are shown
+separately from a successful save. OpenCode's API generates fork IDs server-side:
+a crash before its fork response is journaled can leave an unidentified helper
+that cannot be automatically deleted. That case is reported explicitly.
 
-Both commands accept optional focus text after the topic ID. This lets you
-capture several targeted notes from one long conversation:
+Capture has been checked with Claude Code 2.1.286 and OpenCode 1.18.30. OpenCode
+capture also uses `curl` for its private local server and `ps` for crash recovery.
 
-```vim
-:AgentDashboard distill bank-ownership-transfer user state API responses and permissions
-:AgentDashboard distill bank-ownership-transfer access token creation and expiration
-:AgentDashboard brief bank-ownership-transfer clarify scope and acceptance criteria
-```
+The dashboard shows capture state in the sidebar. While active, `X` cancels;
+after failure, `o` opens output, `e` shows diagnostics, `R` retries, and `d`
+dismisses; after success, `o` opens a note, `r` reviews a brief proposal, and `d`
+dismisses. A capture whose
+source slot has gone away is shown in the orphan-capture section with the same
+available actions. Retry repeats the latest failed/cancelled request when the
+original source is still reported idle.
 
-Use `distill -- <focus text>` or `brief -- <focus text>` to use the selected
-slot's attached topic (or choose one if no topic is attached). Focused brief
-updates preserve accurate existing context outside the requested focus. Review
-and submit each pasted prompt with Enter before starting the next request.
+`:AgentDashboard note [topic]` remains available for saving the current editor
+selection or range with its project and session source. Topic attachments are
+session-local to the current Neovim process.
+
+The older distill/brief prompt-pasting workflow is not the capture interface.
+Do not configure or rely on legacy distill/brief prompt settings for capture.
 
 Claude Code receives the brief from the configured `SessionStart` reporter.
 OpenCode receives a brief-reading prompt only when the dashboard resumes a

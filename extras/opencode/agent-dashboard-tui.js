@@ -16,12 +16,13 @@ function reporter() {
   let current;
   let heartbeat;
 
-  function write(state, session, turn, force = false) {
+  function write(state, session, turn, project, force = false) {
     if (!active) return;
-    if (!force && current?.state === state && current.session === session && current.turn === turn) return;
+    if (!force && current?.state === state && current.session === session && current.turn === turn && current.project === project) return;
     current = {
       slot, state, session, turn, agent: "opencode", time: Math.floor(Date.now() / 1000),
       pid: process.pid, heartbeat: true, owner,
+      ...(typeof project === "string" && path.isAbsolute(project) ? { project } : {}),
     };
     chain = chain.then(async () => {
       if (!current) return;
@@ -47,7 +48,7 @@ function reporter() {
   }
 
   heartbeat = setInterval(() => {
-    if (current) write(current.state, current.session, current.turn, true);
+    if (current) write(current.state, current.session, current.turn, current.project, true);
   }, 2000);
   heartbeat.unref?.();
 
@@ -91,8 +92,9 @@ function setup(api) {
   }
 
   function publish() {
-    if (selected) output.write(blockers.size ? "blocked" : state, selected, turns.get(selected) ?? 0);
-    else output.write("unknown", "none", 0);
+    if (selected) output.write(blockers.size ? "blocked" : state, selected, turns.get(selected) ?? 0,
+      api.data.session.get(selected)?.directory ?? process.cwd());
+    else output.write("unknown", "none", 0, process.cwd());
   }
 
   function reconcile() {
@@ -186,7 +188,7 @@ async function tui(api) {
     const id = current?.name === "session" ? current.params?.sessionID : undefined;
     const session = id && api.state.session.get(id);
     if (!session || session.parentID) {
-      output.write("unknown", "none", 0);
+      output.write("unknown", "none", 0, process.cwd());
       return;
     }
     const blocked = api.state.session.permission(id).length || api.state.session.question(id).length;
@@ -197,7 +199,7 @@ async function tui(api) {
       turns.set(id, (turns.get(id) ?? 0) + 1);
       active.delete(id);
     }
-    output.write(state, id, turns.get(id) ?? 0);
+    output.write(state, id, turns.get(id) ?? 0, session.directory ?? process.cwd());
   }
   const timer = setInterval(sync, 300);
   timer.unref?.();

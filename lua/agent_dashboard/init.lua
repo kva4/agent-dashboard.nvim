@@ -2,6 +2,8 @@ local M = {}
 local tmux = require("agent_dashboard.tmux")
 local session_source = require("agent_dashboard.sessions")
 local topic_source = require("agent_dashboard.topics")
+local capture = require("agent_dashboard.capture")
+local capture_ui = require("agent_dashboard.capture_ui")
 
 local slots = {}
 local terminals = {}
@@ -201,9 +203,35 @@ local function render()
         end
         rows[#lines] = { slot = id }
         slot_lines[id] = #lines - 1
+        local slot_capture = capture_ui.summary(id)
+        if slot_capture then
+            lines[#lines + 1] = fit_title("   " .. slot_capture, math.max(1, vim.api.nvim_win_get_width(list_win) - 2))
+            rows[#lines] = { slot = id, capture = true }
+            local actions = capture_ui.row_items()
+            if #actions > 0 then
+                local labels = { error = "e errors", open = "o open", review = "r review", retry = "R retry", cancel = "X cancel", dismiss = "d dismiss" }
+                local hints = {}; for _, action in ipairs(actions) do hints[#hints + 1] = labels[action] or action end
+                lines[#lines + 1] = "   c capture · " .. table.concat(hints, " · ")
+                rows[#lines] = { slot = id, capture = true }
+            end
+        end
         if topic then
             lines[#lines + 1] = "   ↳ " .. fit_title(topic, vim.api.nvim_win_get_width(list_win) - 6)
             rows[#lines] = { slot = id }
+        end
+    end
+    local capture_slot = capture_ui.source_slot()
+    local source_term = capture_slot and terminals[capture_slot]
+    local orphan_capture = capture_ui.summary(nil, source_term ~= nil and not source_term.exited)
+    if orphan_capture then
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = fit_title(orphan_capture, math.max(1, vim.api.nvim_win_get_width(list_win) - 2))
+        rows[#lines] = { capture = true }
+        local actions = capture_ui.row_items()
+        if #actions > 0 then
+            local labels = { error = "e errors", open = "o open", review = "r review", retry = "R retry", cancel = "X cancel", dismiss = "d dismiss" }
+            local hints = {}; for _, action in ipairs(actions) do hints[#hints + 1] = labels[action] or action end
+            lines[#lines + 1] = "   Capture: " .. table.concat(hints, " · ")
         end
     end
     local topic_list = {}
@@ -236,7 +264,7 @@ local function render()
     lines[#lines + 1] = ""
     lines[#lines + 1] = " RECENT"
     local height = vim.api.nvim_win_get_height(list_win)
-    local available = math.max(0, height - #lines - 3)
+    local available = math.max(0, height - #lines - 4)
     for index = 1, math.min(#recent, available, config.recent_limit) do
         local session = recent[index]
         local label = session.harness == "claude" and "CC" or "OC"
@@ -247,7 +275,8 @@ local function render()
     lines[#lines + 1] = " " .. string.rep("─", vim.api.nvim_win_get_width(list_win) - 2)
     local divider_row = #lines - 1
     lines[#lines + 1] = " a add   x remove   ? help"
-    lines[#lines + 1] = " Enter open   q close"
+    lines[#lines + 1] = " Enter open  Tab terminal"
+    lines[#lines + 1] = " q close"
 
     vim.bo[list_buf].modifiable = true
     vim.api.nvim_buf_set_lines(list_buf, 0, -1, false, lines)
@@ -294,7 +323,10 @@ local function refresh_sessions()
         if generation ~= refresh_generation then return end
         refresh_pending = false
         if cwd ~= vim.fn.getcwd() then refresh_at = 0; return end
-        recent = sessions
+        recent = {}
+        for _, session in ipairs(sessions) do
+            if not capture.is_helper(session.harness, session.id) then recent[#recent + 1] = session end
+        end
         render()
     end, config)
 end
@@ -350,10 +382,14 @@ local function start_terminal(id, command)
         end
     end
     map(config.keys.list, { "n", "t" }, function() M.focus_list() end, "Focus agent list")
+    map("<Tab>", "n", function() M.focus_list() end, "Focus agent list")
+    map("<C-w>h", "n", function() M.focus_list() end, "Focus agent list")
+    map("<C-w><C-h>", "n", function() M.focus_list() end, "Focus agent list")
     map(config.keys.next, { "n", "t" }, function() M.cycle_slot(1) end, "Next agent terminal")
     map(config.keys.previous, { "n", "t" }, function() M.cycle_slot(-1) end, "Previous agent terminal")
     map(config.keys.escape, "t", [[<C-\><C-n>]], "Leave terminal mode")
     map(config.keys.hide, { "n", "t" }, hide, "Hide agent dashboard")
+    map(config.keys.capture or "<M-c>", { "n", "t" }, function() M.distill() end, "Capture session findings")
 
     vim.api.nvim_buf_call(buf, function()
         local opts = {
@@ -590,14 +626,30 @@ function M.send_context(kind, line_range)
     return send_to_selected(text)
 end
 
-local function selected_source()
-    local term, entry = terminals[selected], states[selected]
-    local project = term and term.cwd or vim.fn.getcwd()
+local function selected_source(slot_id)
+    local id = slot_id or selected
+    local term, entry = terminals[id], states[id]
+    local project = entry and entry.project or term and term.cwd or vim.fn.getcwd()
     local source = { project = project }
     source.harness = entry and entry.agent or term and term.agent
     source.session = entry and entry.session or term and term.session_id
     if source.session == "none" or source.session == "unknown" then source.session = nil end
     return source
+end
+
+local function selected_capture_request(kind, slot_id)
+    local id = slot_id or selected
+    local source = selected_source(id)
+    local entry = states[id]
+    local term = terminals[id]
+    if not term or not term.bufnr or term.exited then
+        vim.notify("Open a source agent terminal before capturing findings", vim.log.levels.WARN)
+        return nil
+    end
+    source.slot_id = id
+    source.status = entry and entry.state or "unknown"
+    source.reported = entry ~= nil and not entry.stale
+    return { kind = kind, source = source, topic_id = term.topic_id }
 end
 
 local function choose_topic(callback)
@@ -723,109 +775,54 @@ local function send_topic_prompt(id, prompt, request)
     return send_to_selected(prompt, request)
 end
 
-local function with_focus(prompt, focus, brief)
-    if type(focus) ~= "string" or vim.trim(focus) == "" then return prompt end
-    local scope = brief
-        and "Focus this brief update on the request below. Preserve accurate existing sections outside this "
-            .. "focus; do not remove unrelated established context or invent missing details."
-        or "Create one note focused on the request below. Exclude unrelated conversation topics; include "
-            .. "supporting dependencies and caveats only where needed to understand this focus. If the session "
-            .. "has no findings on this subject, say so rather than filling the note with unrelated material."
-    return prompt .. "\n\n" .. scope .. "\nRequested focus from the user:\n" .. vim.trim(focus)
+local function open_capture_dialog(request)
+    local source_slot = request.source.slot_id
+    local source_term = terminals[source_slot]
+    local source_buffer = source_term and source_term.bufnr
+    local function restore()
+        if terminals[source_slot] == source_term and source_term and source_term.bufnr == source_buffer
+            and valid(terminal_win) then
+            open_slot(source_slot)
+            vim.cmd("startinsert")
+        end
+    end
+    capture_ui.open(request, cached_topics, render, restore, function(candidate)
+        local entry = states[source_slot]
+        if not entry or entry.stale or entry.state ~= "idle" or entry.session ~= candidate.source.session
+            or entry.agent ~= candidate.source.harness then
+            return nil, "Source session is no longer reported idle; capture was not started"
+        end
+        candidate.source.status, candidate.source.reported = "idle", true
+        return capture.validate(candidate)
+    end)
 end
 
 function M.distill(id, focus)
     local function send(topic_id)
-        local topic = topic_source.get(topic_id)
-        if not topic then vim.notify("Topic not found: " .. topic_id, vim.log.levels.WARN); return end
-        local source = selected_source()
-        local path = topic.dir .. "/notes/" .. os.date("%Y-%m-%d") .. "-<slug>.md"
-        local frontmatter = { "---", "date: " .. os.date("%Y-%m-%d") }
-        if source.harness or source.session or source.project then
-            frontmatter[#frontmatter + 1] = "source:"
-            if source.harness then frontmatter[#frontmatter + 1] = "  harness: " .. vim.json.encode(source.harness) end
-            if source.session then frontmatter[#frontmatter + 1] = "  session: " .. vim.json.encode(source.session) end
-            if source.project then frontmatter[#frontmatter + 1] = "  project: " .. vim.json.encode(source.project) end
-        end
-        frontmatter[#frontmatter + 1] = "consolidated: false"
-        frontmatter[#frontmatter + 1] = "---"
-        local default_prompt = "This is my explicit request, submitted through Agent Dashboard's distill command: "
-            .. "capture this session's investigation findings as a new note in the topic \"{{title}}\" at {{note_path}}. "
-            .. "The topic is the destination for a broader initiative spanning multiple projects. This session "
-            .. "does not need to have discussed the topic or its planned feature. I selected this destination "
-            .. "because the subsystem findings contribute to that initiative; do not refuse solely because "
-            .. "the topic name differs from the subject of this conversation.\n\n"
-            .. "Summarize what we actually learned about this project's current behavior: responsibilities, "
-            .. "data it owns or serves, APIs and contracts, permissions, dependencies, and constraints, where "
-            .. "investigated. Preserve useful details even if their connection to the overall initiative is not "
-            .. "yet established. Separate confirmed findings from hypotheses, proposed changes, and open questions. "
-            .. "Do not invent a connection to the topic or describe the planned feature as already implemented.\n\n"
-            .. "Use only findings and evidence already discussed or investigated in this session. Do not read "
-            .. "the topic brief or other topic notes to expand the note, and do not import their claims or "
-            .. "details about other projects. The topic is only the storage destination. Keep the note "
-            .. "self-contained and grounded in this session's project and context; deduplication and "
-            .. "cross-project synthesis happen later during consolidation. "
-            .. "Replace <slug> with a short lowercase hyphenated name "
-            .. "describing the actual findings. Create a new file without overwriting an existing note. "
-            .. "Put the frontmatter below first, then a '# Title.' heading describing this investigation, followed "
-            .. "by concise bullets with supporting file paths and line numbers, decisions, and open questions. "
-            .. "Leave out secrets and personal data. Write the note now rather than only proposing a summary. "
-            .. "If file access is blocked, explain that blocker. Use this exact frontmatter shape:\n"
-            .. "{{source_frontmatter}}"
-        local prompt = fill_prompt(type(config.topics.prompts) == "table" and config.topics.prompts.distill
-            or default_prompt, {
-            title = topic.title, note_path = path, brief_path = topic.dir .. "/brief.md",
-            notes_path = topic.dir .. "/notes", source_frontmatter = table.concat(frontmatter, "\n"),
-        })
-        if send_topic_prompt(topic_id, with_focus(prompt, focus, false),
-            "Please write this session's findings as a note using the pasted instructions. ") then
-            vim.notify("Distill prompt for " .. topic.id .. " is pasted; press Enter to send it",
-                vim.log.levels.INFO)
-        end
+        local request = selected_capture_request("note")
+        if not request then return end
+        request.topic_id, request.focus = topic_id, focus
+        open_capture_dialog(request)
     end
     if id then return send(id) end
     local term = terminals[selected]
     if term and term.topic_id then return send(term.topic_id) end
-    choose_topic(send)
+    local request = selected_capture_request("note")
+    if request then open_capture_dialog(request) end
 end
 
 function M.brief(id, focus)
     local function send(topic_id)
-        local topic = topic_source.get(topic_id)
-        if not topic then vim.notify("Topic not found: " .. tostring(topic_id), vim.log.levels.WARN); return end
-        local default_prompt = "This is my explicit request through Agent Dashboard: draft or improve the brief "
-            .. "for the topic \"{{title}}\" using the feature description, requirements, and decisions in this "
-            .. "conversation. Write the proposal to {{proposal_path}}; do not edit {{brief_path}} directly.\n\n"
-            .. "Read the existing brief at {{brief_path}} if available. Preserve accurate established knowledge "
-            .. "and incorporate this session's feature context. The topic can span multiple projects; this "
-            .. "session need not know how all of them work. Distinguish the desired future behavior from "
-            .. "confirmed current behavior, assumptions, and proposed decisions. Do not invent requirements "
-            .. "or imply that the feature already exists. Mark missing information as open questions.\n\n"
-            .. "Use a title and Updated date, then concise sections for Goal and desired outcome, Scope and "
-            .. "non-goals, Requirements and acceptance criteria, Systems and responsibilities, Current "
-            .. "understanding, Decisions, and Open questions / next investigations. Include supporting code "
-            .. "or note references where available, but leave detailed investigation history in {{notes_path}}. "
-            .. "Keep the brief within {{brief_max_lines}} lines and leave out secrets and personal data. "
-            .. "This is a session-based brief update, not a consolidation of every note: do not change "
-            .. "notes or their consolidated flags. Write the proposal now for my review."
-        local prompt = fill_prompt(type(config.topics.prompts) == "table" and config.topics.prompts.brief
-            or default_prompt, {
-            title = topic.title, brief_path = topic.dir .. "/brief.md", notes_path = topic.dir .. "/notes",
-            proposal_path = topic.dir .. "/brief.proposed.md", brief_max_lines = topic_source.brief_max_lines(),
-        })
-        if send_topic_prompt(topic_id, with_focus(prompt, focus, true),
-            "Please draft or update the topic brief using the pasted instructions. ") then
-            -- Acceptance of a session-based draft must not mark unrelated notes consolidated.
-            topic_source.begin_consolidation(topic_id, { notes = false })
-            vim.notify("Brief prompt is pasted; press Enter to send it", vim.log.levels.INFO)
-            return true
-        end
-        return false
+        local request = selected_capture_request("brief")
+        if not request then return end
+        request.topic_id, request.focus = topic_id, focus
+        open_capture_dialog(request)
     end
     if id then return send(id) end
     local term = terminals[selected]
     if term and term.topic_id then return send(term.topic_id) end
-    choose_topic(send)
+    local request = selected_capture_request("brief")
+    if request then open_capture_dialog(request) end
 end
 
 function M.consolidate(id)
@@ -898,17 +895,24 @@ local function show_help()
         "  j / k       Move between rows",
         "  Enter       Open slot, session, or topic brief",
         "  1-9         Open a slot (create the next slot)",
-        "  a / x       Add / remove a slot",
+        "  a           Add a slot",
+        "  x           Remove slot / delete recent session",
+        "  Tab / C-l   Return to the active terminal",
+        "  l / Right   Return to the active terminal",
+        "  C-w l       Return to the active terminal",
         "  t           Attach / detach topic on a slot",
         "  n           Browse notes on a topic",
         "  D / C       Topic row: distill / consolidate",
+        "  c           Slot/topic row: capture findings from the named source",
         "  y           Copy the session id of the row",
         "  D           Recent row: delete the session",
         "  ?           Show this help",
         "  q / Esc     Hide the dashboard", "", "Agent terminal",
         "  " .. (config.keys.list or "") .. "       Focus the sidebar",
+        "  Tab / C-w h Focus sidebar (normal mode)",
         "  " .. (config.keys.next or "") .. " / " .. (config.keys.previous or "") .. "   Cycle slots",
         "  " .. (config.keys.hide or "") .. "       Hide the dashboard",
+        "  " .. (config.keys.capture or "<M-c>") .. "       Capture findings from this idle session",
         "", "Press q or Esc to close",
     }
     vim.api.nvim_buf_set_lines(help_buf, 0, -1, false, help_lines)
@@ -1044,8 +1048,28 @@ local function list_keymaps()
     vim.keymap.set("n", "q", hide, opts)
     vim.keymap.set("n", "<Esc>", hide, opts)
     vim.keymap.set("n", "a", add_slot, opts)
-    vim.keymap.set("n", "x", remove_slot, opts)
+    vim.keymap.set("n", "x", function()
+        local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
+        if row and row.slot then remove_slot()
+        elseif row and row.session then delete_recent_session()
+        else vim.notify("Select a terminal slot or recent session to remove", vim.log.levels.INFO) end
+    end, opts)
     vim.keymap.set("n", "?", show_help, opts)
+    local function capture_action(action)
+        local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
+        if row and (row.capture or row.slot) then
+            local ok, err = capture_ui.action(action, render)
+            if not ok then vim.notify(err, vim.log.levels.WARN) end
+        else
+            vim.notify("Select the capture result row first", vim.log.levels.INFO)
+        end
+    end
+    vim.keymap.set("n", "o", function() capture_action("open") end, opts)
+    vim.keymap.set("n", "e", function() capture_action("error") end, opts)
+    vim.keymap.set("n", "r", function() capture_action("review") end, opts)
+    vim.keymap.set("n", "R", function() capture_action("retry") end, opts)
+    vim.keymap.set("n", "X", function() capture_action("cancel") end, opts)
+    vim.keymap.set("n", "d", function() capture_action("dismiss") end, opts)
     vim.keymap.set("n", "t", attach_row_topic, opts)
     vim.keymap.set("n", "n", function()
         local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
@@ -1056,6 +1080,15 @@ local function list_keymaps()
         if row and row.topic then M.distill(row.topic.id)
         elseif row and row.session then delete_recent_session() end
     end, opts)
+    vim.keymap.set("n", "c", function()
+        local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
+        if row and row.slot then
+            local request = selected_capture_request("note", row.slot)
+            if request then open_capture_dialog(request) end
+        elseif row and row.topic then
+            M.distill(row.topic.id)
+        end
+    end, opts)
     vim.keymap.set("n", "C", function()
         local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
         if row and row.topic then M.consolidate(row.topic.id) end
@@ -1063,10 +1096,13 @@ local function list_keymaps()
     vim.keymap.set("n", "<CR>", function()
         local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
         if row and row.session then open_session(row.session)
+        elseif row and row.capture then capture_action("open")
         elseif row and row.slot then open_slot(row.slot)
         elseif row and row.topic then open_topic(row.topic.id) end
     end, opts)
-    vim.keymap.set("n", "<C-l>", function() open_slot(selected) end, opts)
+    for _, key in ipairs({ "<Tab>", "<C-l>", "l", "<Right>", "<C-w>l", "<C-w><C-l>" }) do
+        vim.keymap.set("n", key, function() open_slot(selected) end, opts)
+    end
     for index = 1, 9 do
         local slot_index = index
         vim.keymap.set("n", tostring(slot_index), function()
@@ -1175,6 +1211,9 @@ local function poll()
                     term.session_id = report.session
                     entry = { session = report.session, seen = report.turn == 0, turn = 0 }
                     states[id] = entry
+                end
+                if type(report.project) == "string" and report.project:sub(1, 1) == "/" then
+                    entry.project = report.project
                 end
                 if entry.state ~= report.state or entry.stale ~= stale
                     or entry.turn ~= report.turn or entry.pid ~= report.pid then
@@ -1338,6 +1377,24 @@ function M.setup(opts)
         }
     end
     topic_source.setup(config.topics)
+    capture.setup({ dir = config.capture_dir or (vim.fn.stdpath("state") .. "/agent-dashboard/capture"),
+        on_change = function()
+            refresh_topics()
+            render()
+        end })
+    capture_ui.setup(capture, {
+        review_brief = function(id) M.review_consolidation(id) end,
+        open_result = function(path) edit_in_editor(path) end,
+        validate_retry = function(request)
+            local source = request.source
+            local term, entry = terminals[source.slot_id], states[source.slot_id]
+            if not term or term.exited or not entry or entry.stale or entry.state ~= "idle"
+                or entry.session ~= source.session or entry.agent ~= source.harness then
+                return nil, "Resume the original source in an idle slot before retrying capture"
+            end
+            return capture.validate(request)
+        end,
+    })
     M.ns = vim.api.nvim_create_namespace("agent_dashboard")
     for group, target in pairs({
         AgentDashboardBlocked = "DiagnosticError", AgentDashboardWorking = "DiagnosticInfo",
@@ -1401,7 +1458,7 @@ function M.setup(opts)
         callback = function()
             if not changing and list_visible() then
                 local current = vim.api.nvim_get_current_win()
-                if current ~= list_win and current ~= terminal_win then hide() end
+                if current ~= list_win and current ~= terminal_win and not capture_ui.owns_window(current) then hide() end
             end
             if valid(terminal_win) and vim.api.nvim_get_current_win() == terminal_win then mark_seen(selected) end
         end,

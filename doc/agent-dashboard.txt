@@ -39,17 +39,13 @@ See the project README for lazy.nvim setup and Claude/OpenCode reporter setup.
 :AgentDashboard topic [action]   Create, open, attach, or export a topic.
 :AgentDashboard note [topic]     Save the selection or range as a topic note.
 :AgentDashboard distill [topic] [focus...]
-                                  Paste a focused note-writing prompt.
+                                  Open isolated note capture for the selected source.
 :AgentDashboard brief [topic] [focus...]
-                                  Draft/improve a brief from session context.
-:AgentDashboard brief review [topic]
-                                  Diff the current brief and its proposal.
-:AgentDashboard brief accept [topic]
-                                  Accept a reviewed brief proposal.
-:AgentDashboard brief reject [topic]
-                                  Reject a brief proposal.
+                                  Open isolated brief-proposal capture.
+:AgentDashboard brief review|accept|reject [topic]
+                                  Review, accept, or reject a brief proposal.
 :AgentDashboard consolidate [topic]
-                                  Paste a brief-consolidation prompt.
+                                  Request note consolidation in the selected agent.
 :AgentDashboard consolidate review [topic]
                                   Diff the current brief and its proposal.
 :AgentDashboard consolidate accept [topic]
@@ -73,11 +69,19 @@ In a visual-mode Lua mapping, call send_context() directly to use the active
 selection rather than the previous visual marks.
 
 In the sidebar, |j| and |k| move between rows, |Enter| opens a slot, recent
-session, or topic brief, |a| adds a slot, |x| removes one, |y| copies the session
+session, or topic brief, |a| adds a slot, |x| removes a slot or deletes a recent
+session after confirmation, |y| copies the session
 id of the row, and |t| attaches or detaches a topic on a slot. On a topic row,
-|n| browses notes, |D| pastes a distill prompt, and |C| pastes a consolidation
-prompt. On a recent session row, |D| deletes the session after confirmation.
-|?| opens key help, and |q| hides the dashboard.
+|n| browses notes and |D| opens note capture. On a recent session row, |D|
+deletes the session after confirmation.
+|c| on a slot opens capture from that source; on a topic it uses that destination
+and the currently selected source slot. |?| opens key help, and |q| hides the dashboard.
+
+Return from the sidebar to the active terminal with <Tab>, <C-l>, l, <Right>,
+or <C-w>l. These focus the terminal and enter terminal mode without opening the
+row under the cursor. From an agent terminal, <C-h> focuses the sidebar in
+terminal or normal mode; <Tab> and <C-w>h also do so in normal mode. Terminal-mode
+<Tab> is passed through to the agent for completion.
 
 ===============================================================================
 3. LUA API                                                  *agent-dashboard-api*
@@ -91,9 +95,8 @@ require("agent_dashboard").status()            Return the current badge symbol.
 require("agent_dashboard").send_context(kind)  Send selection/file/location.
 require("agent_dashboard").attach_topic(n, id) Attach a topic to slot n; nil detaches.
 require("agent_dashboard").note(id, range)     Save selected text as a topic note.
-require("agent_dashboard").distill(id)         Paste a distill prompt.
-require("agent_dashboard").brief(id)           Paste a session-based brief prompt.
-require("agent_dashboard").consolidate(id)     Paste a consolidation prompt.
+require("agent_dashboard").distill(id, focus)  Open isolated note capture.
+require("agent_dashboard").brief(id, focus)    Open isolated brief proposal capture.
 require("agent_dashboard").review_consolidation(id)
                                                Open a brief proposal diff.
 require("agent_dashboard").claude_hook_path()  Return the bundled hook path.
@@ -104,13 +107,6 @@ The status() function returns one of |!| (blocked), |●| (working), |?| (unknow
 It can be used in a statusline, for example:
 
     set statusline+=%{v:lua.require'agent_dashboard'.status()}
-
-distill(id, focus) and brief(id, focus) accept an optional focus string. Pass nil
-as id to use the attached topic or a picker. In commands, use distill -- {focus}
-or brief -- {focus} to omit the topic ID. Focus text is the remaining command
-text and does not require quotation marks. It is included with custom prompt
-templates too. Distill creates one targeted note; brief preserves existing
-context outside the focus. The pasted prompt still requires Enter to submit.
 
 ===============================================================================
 4. STATUS REPORTS                                        *agent-dashboard-reports*
@@ -144,21 +140,29 @@ with the current working directory; edit topic.md to add or remove project roots
 :AgentDashboard topic export-skill {id}    Export a Claude skill.
 
 Each slot supports one topic. Attachments last for the current Neovim process.
-Claude receives the brief through the SessionStart reporter. OpenCode receives
-a brief-reading prompt only when the dashboard resumes a session in an attached
-slot and the reporter identifies it as idle. Switching sessions never repeats
-the prompt. Delivery times out after topics.opencode_prompt_timeout_ms (15000
-by default) without a matching report. The prompt is pasted without Enter.
-Manual OpenCode starts do not receive it. Claude reads <slot>.topic from the
-dashboard state directory on every SessionStart; attaching and detaching do
-not restart shells. Agent
-prompts for distill and consolidate are pasted but not submitted automatically;
-review them and press Enter. Consolidation writes brief.proposed.md; review its
-diff before accepting or rejecting it.
+Capture requires an idle, reported Claude Code or OpenCode session. Press <M-c>
+in its agent terminal (default keys.capture; configurable), or use the dashboard
+capture action. Choose a topic, optional focus, and Save findings or Propose
+brief. The additional model request runs separately; no prompt is pasted into
+the source terminal and nothing is submitted there. Save findings writes a
+distinct note with project/session provenance. Propose brief is session-based,
+distinct from note consolidation, and must be reviewed and explicitly accepted
+or rejected. Capture is not run automatically after a turn.
 
-topics.auto_distill accepts false (default) or "remind". Reminders fire once per
-session when an attached agent finishes a turn. Use consolidate topic {id} to
-address topics named review, accept, or reject.
+The sidebar reports capture state. While active, |X| cancels. Failed results
+offer |o| open, |R| retry, and |d| dismiss; complete results offer |o| open,
+|r| review, and |d| dismiss. Cancelled results can be dismissed. If the source
+slot disappears, the latest capture is listed in the orphan section. Known
+journaled helpers are filtered from recent sessions, and cleanup is retried at
+startup; the plugin does not guess helper identity by recency. If saving the
+topic file fails, generated text is retained at a durable local recovery path
+before deleting the helper. A successful save and a cleanup problem are displayed
+separately. OpenCode generates fork IDs server-side: a crash before its fork
+response is journaled can leave an unidentified helper. That case is reported
+explicitly; the plugin never guesses which session to delete.
+
+Legacy distill/brief prompt-pasting commands and settings are not this capture
+workflow and may be unsupported.
 
 See docs/design/topics.md for the full workflow, metadata format, and options.
 

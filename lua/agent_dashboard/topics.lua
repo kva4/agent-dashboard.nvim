@@ -2,6 +2,7 @@ local M = {}
 local directory = vim.fn.stdpath("data") .. "/agent-dashboard/topics"
 local brief_limit = 150
 local consolidation_notes = {}
+local with_frontmatter
 
 local function join(...)
     return (table.concat({ ... }, "/"):gsub("/+$", ""))
@@ -19,6 +20,51 @@ end
 local function read(path)
     if vim.fn.filereadable(path) ~= 1 then return nil end
     return table.concat(vim.fn.readfile(path), "\n")
+end
+
+-- Exclusive creation prevents a concurrent capture (or a pre-existing file) from
+-- being silently overwritten. Writes are flushed before the descriptor is closed.
+local function write_new(path, text)
+    local fd, err = vim.uv.fs_open(path, "wx", 384)
+    if not fd then return nil, err or "File already exists" end
+    local offset = 0
+    local failure
+    while offset < #text do
+        local written, write_err = vim.uv.fs_write(fd, text:sub(offset + 1), offset)
+        if not written or written <= 0 then failure = write_err or "Write failed"; break end
+        offset = offset + written
+    end
+    if not failure then local ok, sync_err = vim.uv.fs_fsync(fd); if not ok then failure = sync_err or "Fsync failed" end end
+    local close_ok, close_err = vim.uv.fs_close(fd)
+    if not close_ok and not failure then failure = close_err or "Close failed" end
+    if failure then vim.uv.fs_unlink(path); return nil, failure end
+    return true
+end
+
+function M.write_new(path, text)
+    if type(path) ~= "string" or type(text) ~= "string" then return nil, "Invalid write" end
+    return write_new(path, text)
+end
+
+function M.capture_snapshot(id)
+    local path, err = M.brief_path(id)
+    if not path then return nil, err end
+    local text = read(path) or ""
+    if vim.fn.filereadable(join(topic_dir(id), "brief.proposed.md")) == 1 then
+        return nil, "A brief proposal is already pending"
+    end
+    return { path = path, text = text, hash = vim.fn.sha256(text) }
+end
+
+function M.capture_save(id, kind, text, source, snapshot)
+    if kind == "note" then return M.note(id, text, source) end
+    if kind ~= "brief" or type(snapshot) ~= "table" then return nil, "Invalid brief snapshot" end
+    if vim.fn.sha256(read(snapshot.path) or "") ~= snapshot.hash then
+        return nil, "brief.md changed while capture was running"
+    end
+    source = type(source) == "table" and source or {}
+    local content = with_frontmatter({ source = source }, text)
+    return M.propose_brief(id, content, snapshot.hash, {})
 end
 
 local function strip_comment(value)
@@ -96,7 +142,7 @@ local function yaml_scalar(value)
     return vim.json.encode(tostring(value or ""))
 end
 
-local function with_frontmatter(metadata, body)
+with_frontmatter = function(metadata, body)
     local lines = { "---" }
     for _, key in ipairs({ "title", "status", "created", "date", "consolidated" }) do
         local value = metadata[key]
@@ -288,17 +334,19 @@ function M.note(id, text, source)
     local date = os.date("%Y-%m-%d")
     local stem = date .. "-" .. slug(text)
     local candidate, suffix = join(path, "notes", stem .. ".md"), 1
-    while vim.fn.filereadable(candidate) == 1 do
-        suffix = suffix + 1
-        candidate = join(path, "notes", stem .. "-" .. suffix .. ".md")
-    end
     source = type(source) == "table" and source or {}
     local body = vim.trim(text)
     if not body:match("^#%s") then body = "# " .. slug(text):gsub("%-", " ") .. ".\n\n" .. body end
     local content = with_frontmatter({
         date = date, source = source, consolidated = false,
     }, body)
-    vim.fn.writefile(vim.split(content, "\n", { plain = true }), candidate)
+    local ok, write_err = write_new(candidate, content)
+    while not ok and tostring(write_err):find("EEXIST", 1, true) do
+        suffix = suffix + 1
+        candidate = join(path, "notes", stem .. "-" .. suffix .. ".md")
+        ok, write_err = write_new(candidate, content)
+    end
+    if not ok then return nil, write_err end
     return candidate
 end
 
@@ -308,7 +356,24 @@ function M.accept_proposal(id)
     if not topic_metadata(id) then return nil, "Topic not found: " .. id end
     local proposal, brief = join(path, "brief.proposed.md"), join(path, "brief.md")
     if vim.fn.filereadable(proposal) ~= 1 then return nil, "No brief.proposed.md exists for " .. id end
+    -- Acceptance is explicit, but never replace a brief changed since proposal.
+    local snapshot_path = join(path, "brief.proposed.base.sha256")
+    local expected = read(snapshot_path)
+    if expected and vim.fn.sha256(read(brief) or "") ~= expected then
+        return nil, "brief.md changed since proposal; refusing to overwrite"
+    end
+    if vim.fn.filereadable(brief) == 1 then
+        local original = read(brief)
+        local suffix, saved, save_err = 0, nil, nil
+        repeat
+            suffix = suffix + 1
+            local backup = join(path, "brief.capture-backup." .. tostring(os.time()) .. "-" .. suffix .. ".md")
+            saved, save_err = write_new(backup, original)
+        until saved or not tostring(save_err):find("EEXIST", 1, true)
+        if not saved then return nil, "Could not preserve current brief: " .. tostring(save_err) end
+    end
     if vim.fn.rename(proposal, brief) ~= 0 then return nil, "Could not replace brief.md" end
+    vim.fn.delete(snapshot_path)
     local selected_notes = consolidation_notes[id]
     local snapshot = pending_notes_path(id)
     if not selected_notes and snapshot and vim.fn.filereadable(snapshot) == 1 then
@@ -360,9 +425,32 @@ function M.reject_proposal(id)
     local proposal = join(path, "brief.proposed.md")
     if vim.fn.filereadable(proposal) ~= 1 then return nil, "No brief.proposed.md exists for " .. id end
     vim.fn.delete(proposal)
+    vim.fn.delete(join(path, "brief.proposed.base.sha256"))
     consolidation_notes[id] = nil
     vim.fn.delete(pending_notes_path(id))
     return true
+end
+
+function M.propose_brief(id, text, base_hash, selected_notes)
+    local path, err = topic_dir(id)
+    if not path then return nil, err end
+    if not topic_metadata(id) then return nil, "Topic not found: " .. tostring(id) end
+    if type(text) ~= "string" or vim.trim(text) == "" then return nil, "Brief text is empty" end
+    local proposal = join(path, "brief.proposed.md")
+    if vim.fn.filereadable(proposal) == 1 then return nil, "A brief proposal is already pending" end
+    local ok, write_err = write_new(proposal, text)
+    if not ok then return nil, write_err end
+    local snapshot = join(path, "brief.proposed.base.sha256")
+    local snap_ok, snap_err = write_new(snapshot, base_hash or vim.fn.sha256(read(join(path, "brief.md")) or ""))
+    if not snap_ok then vim.fn.delete(proposal); return nil, snap_err end
+    local notes_path = pending_notes_path(id)
+    local names = {}
+    for name in pairs(selected_notes or {}) do names[#names + 1] = name end
+    table.sort(names)
+    local notes_ok, notes_err = write_new(notes_path, vim.json.encode(names))
+    if not notes_ok then vim.fn.delete(proposal); vim.fn.delete(snapshot); return nil, notes_err end
+    consolidation_notes[id] = selected_notes or {}
+    return proposal
 end
 
 function M.begin_consolidation(id, opts)
