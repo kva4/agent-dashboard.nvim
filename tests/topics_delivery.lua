@@ -17,6 +17,7 @@ local source_state = vim.json.decode(table.concat(vim.fn.readfile(report_dir .. 
 assert(source_state.project == project)
 vim.env.NVIM_AGENT_DASHBOARD_DIR, vim.env.NVIM_AGENT_SLOT = old_dir, old_slot
 local topics = require("agent_dashboard.topics")
+local prompts = require("agent_dashboard.prompts")
 topics.setup({ dir = root .. "/topics" })
 assert(topics.create("delivery"))
 local sessions = {
@@ -42,7 +43,9 @@ end
 vim.api.nvim_get_proc_children = function() return {} end
 vim.api.nvim_chan_send = function(_, text) sent[#sent + 1] = text end
 local dashboard = require("agent_dashboard")
-dashboard.setup({ tmux = false, topics = { dir = topics.directory(), opencode_prompt_timeout_ms = 2200 },
+local prompt_templates = {}
+dashboard.setup({ tmux = false, topics = { dir = topics.directory(), brief_max_lines = 43,
+    opencode_prompt_timeout_ms = 2200, prompts = prompt_templates },
     capture_dir = root .. "/capture" })
 dashboard.toggle()
 assert(dashboard.attach_topic(1, "delivery"))
@@ -72,6 +75,10 @@ assert(not vim.wait(1200, function() return #sent > 1 end)) -- No delivery to a 
 report(101, "ses_first", "idle")
 assert(vim.wait(1600, function() return #sent == 2 end))
 assert(sent[2]:sub(-6) == "\27[201~" and not sent[2]:find("`", 1, true))
+assert(not sent[2]:find("\n", 1, true))
+assert(sent[2]:find(prompts.opencode_delivery(topics.brief_path("delivery"),
+    topics.directory() .. "/delivery/notes"), 1, true))
+assert(sent[2]:find("may be stale, so verify claims before relying on them", 1, true))
 open_recent("ses_first")
 assert(not vim.wait(200, function() return #sent > 2 end)) -- Switching never redelivers.
 
@@ -157,6 +164,28 @@ vim.cmd("AgentDashboard consolidate delivery")
 assert(sent[#sent]:match("^(.-)\27%[200~") ==
     "Please consolidate the topic notes using the pasted instructions. ")
 assert(sent[#sent]:sub(-6) == "\27[201~")
+local consolidation = sent[#sent]
+assert(consolidation:find(prompts.brief_guidance(), 1, true))
+for _, path in ipairs({ "notes", "brief.md", "brief.proposed.md" }) do
+    assert(consolidation:find(topics.directory() .. "/delivery/" .. path, 1, true))
+end
+assert(not consolidation:find("{{", 1, true))
+assert(consolidation:find("consolidated: false. Don't edit brief.md or the notes.", 1, true))
+assert(consolidation:find("frontmatter date", 1, true))
+assert(consolidation:find("frontmatter source.project", 1, true))
+
+-- Custom consolidation templates can reuse the same guidance and configured limit.
+prompt_templates.consolidate = "Custom {{title}}: {{brief_max_lines}} lines.\n{{brief_guidance}}\n"
+    .. "{{brief_path}}\n{{notes_path}}\n{{proposal_path}}"
+assert(dashboard.consolidate("delivery"))
+consolidation = sent[#sent]
+assert(consolidation:find("Custom Delivery: 43 lines.", 1, true))
+assert(consolidation:find(prompts.brief_guidance(), 1, true))
+assert(consolidation:find("Stay within 43 lines", 1, true))
+for _, path in ipairs({ "notes", "brief.md", "brief.proposed.md" }) do
+    assert(consolidation:find(topics.directory() .. "/delivery/" .. path, 1, true))
+end
+assert(not consolidation:find("{{", 1, true))
 vim.fn.has, vim.fn.termopen, vim.fn.executable = has, termopen, executable
 vim.api.nvim_get_proc_children, vim.api.nvim_chan_send = children, chan_send
 vim.fn.delete(root, "rf")

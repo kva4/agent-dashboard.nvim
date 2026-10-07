@@ -164,6 +164,35 @@ if vim.fn.executable("jq") == 1 then
     assert(vim.v.shell_error == 0)
     report = vim.json.decode(table.concat(vim.fn.readfile(report_path), "\n"))
     assert(report.turn == 4)
+
+    -- Attachment delivery warns about stale knowledge and reports actual truncation.
+    local topic_dir = report_dir .. "/topic with spaces"
+    local brief_path = topic_dir .. "/brief.md"
+    vim.fn.mkdir(topic_dir, "p")
+    vim.fn.writefile({ "Reporter topic", topic_dir, "2" }, report_dir .. "/777.topic")
+    local function start_with_brief(lines, binary)
+        vim.fn.writefile(lines, brief_path, binary and "b" or "")
+        local output = vim.fn.system({ "bash", reporter, "start" }, payload)
+        assert(vim.v.shell_error == 0, output)
+        assert(output:find('You are working on the topic "Reporter topic".', 1, true))
+        assert(output:find("it may be stale, so verify claims against the code", 1, true))
+        assert(output:find("tell the user when a claim looks outdated", 1, true))
+        assert(output:find(topic_dir .. "/notes", 1, true))
+        assert(output:find("the task instead of all of them up front", 1, true))
+        return output
+    end
+    local output = start_with_brief({ "# Reporter brief", "Kept finding", "Hidden finding" }, true)
+    assert(output:find("# Reporter brief\nKept finding\n", 1, true))
+    assert(not output:find("Hidden finding", 1, true))
+    assert(output:find("(Brief truncated at 2 lines. Read " .. brief_path .. " for the rest.)", 1, true))
+    for _, binary in ipairs({ false, true }) do
+        output = start_with_brief({ "# Reporter brief", "Last finding" }, binary)
+        assert(output:find("# Reporter brief\nLast finding\n", 1, true))
+        assert(not output:find("Brief truncated", 1, true), "an exact-limit brief must not claim truncation")
+    end
+    output = start_with_brief({ "Only one line" }, true)
+    assert(output:find("Only one line\n", 1, true) and not output:find("Brief truncated", 1, true))
+
     vim.fn.system({ "bash", reporter, "unknown" }, payload)
     assert(vim.v.shell_error ~= 0)
     vim.env.NVIM_AGENT_DASHBOARD_DIR, vim.env.NVIM_AGENT_SLOT = previous_dir, previous_slot

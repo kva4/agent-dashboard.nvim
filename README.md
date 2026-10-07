@@ -152,7 +152,16 @@ From an agent terminal, press `<M-c>` (Alt-C; configurable as
 dashboard, press `c` on a slot row to capture from that slot (using its attached
 topic when available), or on a topic row to capture that topic from the currently
 selected slot. Choose a destination topic, enter
-optional focus text, then select **Save findings** or **Propose brief**. Capture
+optional focus text, then select **Save findings** or **Propose brief**. In the
+capture popup, press `n` (or activate **New topic**) to enter a new topic ID using
+lowercase letters, numbers, and hyphens. The new topic is selected as the capture
+destination and associated with the source session's project, without changing
+the slot's attachment. The popup shows separate **Notes model** and **Brief model**
+fields. Press `m` to select the note model or `M` (Shift-M) to select the brief
+model; Tab/Enter also activates either field. The picker lists configured and
+recently used models, with **Enter model ID…** for another model and **Use configured
+default** to return to your setup setting. Press `s` to save findings or `b` to
+propose its brief. Capture
 requires a session that has an idle status report; an unreported shell or a
 working/unknown session is not eligible. The capture runs separately from the
 agent terminal, so its response is not pasted into the conversation and is not
@@ -160,6 +169,8 @@ submitted as a prompt there. The initial release does not start capture
 automatically after an agent turn.
 
 Save findings creates a distinct note with source project/session provenance.
+Notes open with a short lead and a body shaped to the session; briefs orient future
+sessions with durable facts, decisions, constraints, status, and pointers to details.
 Propose brief makes a session-based proposal distinct from note consolidation;
 review the proposal and explicitly accept or reject it. Optional focus text
 narrows the requested subject. Each capture makes an additional model request.
@@ -175,7 +186,7 @@ that cannot be automatically deleted. That case is reported explicitly.
 Capture has been checked with Claude Code 2.1.286 and OpenCode 1.18.30. OpenCode
 capture also uses `curl` for its private local server and `ps` for crash recovery.
 
-Choose the model for both note and brief capture by source harness:
+Choose shared defaults for note and brief capture by source harness:
 
 ```lua
 require("agent_dashboard").setup({
@@ -186,18 +197,52 @@ require("agent_dashboard").setup({
 })
 ```
 
+Set separate models for **Save findings** (`note`) and **Propose brief** (`brief`)
+with optional per-kind overrides:
+
+```lua
+require("agent_dashboard").setup({
+    capture_models = {
+        note = {
+            claude = "sonnet",
+            opencode = "anthropic/claude-sonnet-4-6",
+        },
+        brief = {
+            claude = "opus",
+            opencode = "openai/gpt-6.1-sol",
+        },
+    },
+})
+```
+
+Use model IDs available in your configured providers. Each kind-specific model
+overrides the shared setting for that harness; omitted values fall back to
+`capture_models.claude` or `capture_models.opencode`, including the plugin
+defaults. Existing configurations remain valid. Restart Neovim after changing
+your setup configuration. The popup initially uses these defaults, then preselects
+the last model actually used for each source harness and capture kind. Selections
+are remembered only when capture starts, not when the picker is edited or
+cancelled. They persist across Neovim restarts in `model-history.json` under
+`capture_dir` (default: `stdpath("state") .. "/agent-dashboard/capture"`).
+
 Claude accepts a model alias or full model ID supported by Claude Code. OpenCode
-uses `provider/model` identifiers from your configured providers. The values
-shown above are the plugin defaults. These settings apply to
+uses `provider/model` identifiers from your configured providers. The shared
+values in the first example are the plugin defaults. These settings apply to
 isolated capture; consolidation uses the model in the selected agent terminal.
 
 The dashboard shows capture state in the sidebar. While active, `X` cancels;
 after failure, `o` opens output, `e` shows diagnostics, `R` retries, and `d`
-dismisses; after success, `o` opens a note, `r` reviews a brief proposal, and `d`
-dismisses. A capture whose
-source slot has gone away is shown in the orphan-capture section with the same
+dismisses; after success, `o` opens a note, `r` reviews a brief proposal, `A`
+(Shift-A) accepts it, and `d` dismisses. A capture whose source slot has gone
+away is shown in the orphan-capture section with the same
 available actions. Retry repeats the latest failed/cancelled request when the
 original source is still reported idle.
+
+Review a brief proposal before accepting it. In the sidebar, `A` works on the
+completed brief capture or its source slot, or on a topic row with a pending
+proposal. Acceptance saves any edited proposal buffer, promotes it to `brief.md`,
+opens the accepted brief, and dismisses the matching completed capture result.
+Lowercase `a` still adds a terminal slot.
 
 `:AgentDashboard note [topic]` remains available for saving the current editor
 selection or range with its project and session source. Topic attachments are

@@ -8,6 +8,7 @@ local topics = require("agent_dashboard.topics")
 topics.setup({ dir = root .. "/topics" })
 assert(topics.create("capture-test", { title = "Capture test" }))
 local capture = require("agent_dashboard.capture")
+local prompts = require("agent_dashboard.prompts")
 
 local original_chansend = vim.fn.chansend
 local original_nvim_chan_send = vim.api.nvim_chan_send
@@ -23,6 +24,31 @@ assert(capture.validate(request))
 local invalid = vim.deepcopy(request)
 invalid.source.status = "busy"
 assert(not capture.validate(invalid))
+
+-- Notes orient a future reader and adapt to the session without requiring a template.
+do
+    for _, focus in ipairs({ false, "   ", "  retry behavior  " }) do
+        local text = prompts.capture({ request = { kind = "note", focus = focus or nil },
+            topic_title = "Capture test" })
+        assert(text:find("Reader: a future agent", 1, true))
+        assert(text:find("without access to this\nconversation", 1, true))
+        assert(text:find("two- to four-sentence\nlead", 1, true))
+        for _, shape in ipairs({ "Explanation or Q&A", "Investigation or debugging", "Implementation", "Search or exploration" }) do
+            assert(text:find(shape, 1, true))
+        end
+        assert(text:find("These aren't required sections", 1, true))
+        assert(text:find("Record the final state", 1, true))
+        assert(text:find("The topic brief and other notes are not evidence for this note.", 1, true))
+        if focus and vim.trim(focus) ~= "" then
+            assert(#vim.split(text, vim.trim(focus), { plain = true }) == 2, "focus must appear exactly once")
+            assert(text:find("the selection boundary, not merely an emphasis", 1, true))
+            assert(text:find("The title and lead must describe the focused subject", 1, true))
+        else
+            assert(not text:find("Requested focus", 1, true))
+            assert(not text:find("Scope for this note", 1, true))
+        end
+    end
+end
 
 local claude = require("agent_dashboard.capture.claude")
 local claude_request = vim.deepcopy(request)
@@ -143,10 +169,126 @@ do
     a.done(nil, "simulated failure")
     vim.wait(100, function() return latest().state == "failed" end, 5)
     assert(capture.dismiss())
-    for _, invalid_model in ipairs({ "", "missing-provider", 42 }) do
+    for _, invalid_model in ipairs({ "", "missing-provider", 42, false, {} }) do
         input.model = invalid_model
         assert(not capture.start(input))
     end
+end
+
+-- Per-kind overrides are independent, with shared harness settings as fallback.
+do
+    local a = adapter()
+    local models = {
+        claude = "shared-claude", opencode = "openai/shared-model",
+        note = { claude = "note-claude", opencode = "openai/note-model" },
+        brief = { claude = "brief-claude", opencode = "openai/brief-model" },
+    }
+    local function configure()
+        capture.setup({ dir = root .. "/journal-kind-models", models = models,
+            adapters = { opencode = a, claude = a } })
+    end
+    local function run(input, expected)
+        local original = vim.deepcopy(input)
+        assert(capture.start(input))
+        assert(a.request.model == expected)
+        assert(latest().request.model == expected)
+        assert(vim.deep_equal(input, original), "per-kind model resolution must not mutate the caller")
+        a.done(nil, "simulated failure")
+        assert(vim.wait(100, function() return latest().state == "failed" end, 5))
+        assert(capture.dismiss())
+    end
+    configure()
+    for _, source_request in ipairs({ request, claude_request }) do
+        for _, kind in ipairs({ "note", "brief" }) do
+            local input = vim.deepcopy(source_request)
+            input.kind = kind
+            run(input, models[kind][input.source.harness])
+            input.model = input.source.harness == "claude" and "explicit-claude" or "openai/explicit-model"
+            run(input, input.model)
+        end
+    end
+    models.note.opencode, models.brief.claude = nil, nil
+    for _, source_request in ipairs({ request, claude_request }) do
+        for _, kind in ipairs({ "note", "brief" }) do
+            local input = vim.deepcopy(source_request)
+            input.kind = kind
+            run(input, models[kind][input.source.harness] or models[input.source.harness])
+        end
+    end
+    models.opencode = nil
+    run(vim.deepcopy(request), nil) -- With no shared/override model, leave selection to the harness.
+    models.opencode = "openai/shared-model"
+    for _, kind in ipairs({ "note", "brief" }) do
+        local input = vim.deepcopy(request)
+        input.kind = kind
+        for _, invalid_model in ipairs({ "", "missing-provider", 42, false, {} }) do
+            models[kind].opencode = invalid_model
+            a.request = nil
+            assert(not capture.start(input))
+            assert(a.request == nil, "invalid kind-specific settings must fail before starting the worker")
+        end
+        models[kind].opencode = nil
+    end
+    models.note = "not-a-harness-table"
+    local ok, err = capture.start(vim.deepcopy(request))
+    assert(not ok and err == "Capture models for note must be a harness-to-model table")
+    local input = vim.deepcopy(request)
+    input.kind = "brief"
+    run(input, models.opencode) -- Invalid note settings do not affect brief capture.
+    input.kind, input.model = "note", "openai/explicit-model"
+    run(input, input.model) -- Explicit requests still take precedence over configured overrides.
+    capture.setup({ dir = root .. "/journal-invalid-models", models = false,
+        adapters = { opencode = a } })
+    ok, err = capture.start(vim.deepcopy(request))
+    assert(not ok and err == "Capture models must be a table")
+end
+
+-- The popup can preselect the last launched model, independently by harness/kind.
+do
+    local a = adapter()
+    local directory = root .. "/journal-model-picker"
+    local models = { claude = "sonnet", opencode = "openai/shared",
+        note = { opencode = "openai/note-default" }, brief = { opencode = "openai/brief-default" } }
+    local function configure(worker)
+        capture.setup({ dir = directory, models = models, adapters = { opencode = worker or a, claude = worker or a } })
+    end
+    configure()
+    local options = capture.model_options(request)
+    assert(options.current == models.note.opencode and options.default == models.note.opencode)
+    assert(options.choices[1] == models.note.opencode and vim.tbl_contains(options.choices, models.brief.opencode))
+    local input = vim.deepcopy(request)
+    input.model = "openai/selected-note"
+    assert(capture.validate(input))
+    assert(vim.fn.filereadable(directory .. "/model-history.json") == 0, "validation alone does not remember a model")
+    assert(capture.start(input))
+    a.done(nil, "simulated failure")
+    assert(vim.wait(100, function() return latest().state == "failed" end, 5))
+    assert(capture.dismiss())
+    assert(capture.model_options(request).current == input.model)
+    local brief_request = vim.deepcopy(request)
+    brief_request.kind = "brief"
+    assert(capture.model_options(brief_request).current == models.brief.opencode)
+    assert(capture.model_options(claude_request).current == "sonnet", "harness preferences are independent")
+    models.note.opencode = "openai/new-default"
+    configure()
+    options = capture.model_options(request)
+    assert(options.current == "openai/selected-note" and options.default == "openai/new-default",
+        "remembered selection survives setup/restart while the configured default remains selectable")
+    brief_request.model = "openai/selected-brief"
+    assert(capture.start(brief_request))
+    a.done(nil, "simulated failure")
+    assert(vim.wait(100, function() return latest().state == "failed" end, 5))
+    assert(capture.dismiss())
+    brief_request.model = nil
+    assert(capture.model_options(brief_request).current == "openai/selected-brief")
+    configure(adapter({ prepare_error = true }))
+    input.model = "openai/not-launched"
+    assert(not capture.start(input))
+    assert(capture.model_options(request).current == "openai/selected-note", "failed launch does not replace the last used model")
+    assert(capture.dismiss())
+    input.model = "missing-provider"
+    assert(not capture.start(input))
+    assert(capture.model_options(request).current == "openai/selected-note")
 end
 
 -- Isolate the worker environment and test the real adapter's jobstart contract.
@@ -184,6 +326,9 @@ do
     input.focus, input.topic_id, input.source.session = "mutated", "missing", "ses_other"
     assert(a.request.focus == "retry behavior" and a.request.topic_id == "capture-test")
     assert(a.request.source.session == "ses_source" and a.prompt:find("retry behavior", 1, true))
+    assert(a.prompt:find("Reader: a future agent", 1, true))
+    assert(a.prompt:find("two- to four-sentence\nlead", 1, true))
+    assert(#vim.split(a.prompt, "retry behavior", { plain = true }) == 2)
     finish(a)
     assert(latest().state == "complete")
     assert(vim.fn.filereadable(latest().path) == 1 and a.calls.cleanup)
@@ -380,10 +525,22 @@ do
 
     local brief_adapter = adapter()
     setup(brief_adapter, "journal-brief")
+    local previous_limit = topics.brief_max_lines()
+    topics.setup({ brief_max_lines = 37 })
     local brief_request = vim.deepcopy(request); brief_request.kind = "brief"
     capture.start(brief_request)
     assert(brief_adapter.prompt:find("not note consolidation", 1, true))
     assert(not brief_adapter.prompt:find("Current brief supplied explicitly", 1, true) == false)
+    assert(brief_adapter.prompt:find(prompts.brief_guidance(), 1, true))
+    assert(brief_adapter.prompt:find("first 37 lines are delivered", 1, true))
+    assert(brief_adapter.prompt:find("Stay within 37 lines", 1, true))
+    assert(brief_adapter.prompt:find("Reader: a future agent", 1, true))
+    assert(brief_adapter.prompt:find("Don't drop existing knowledge", 1, true))
+    assert(brief_adapter.prompt:find("return the current brief unchanged", 1, true))
+    assert(#vim.split(brief_adapter.prompt, request.focus, { plain = true }) == 2)
+    local snapshot = table.concat(vim.fn.readfile(topics.brief_path("capture-test")), "\n")
+    assert(brief_adapter.prompt:find("<current-brief>\n" .. snapshot .. "\n</current-brief>", 1, true))
+    topics.setup({ brief_max_lines = previous_limit })
     local _, busy_err = capture.start(request)
     assert(not _ and busy_err:find("already active", 1, true))
     local brief_path = topics.brief_path("capture-test")

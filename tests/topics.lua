@@ -2,6 +2,15 @@ vim.opt.runtimepath:prepend(vim.fn.getcwd())
 package.path = vim.fn.getcwd() .. "/lua/?.lua;" .. vim.fn.getcwd() .. "/lua/?/init.lua;" .. package.path
 
 local topics = require("agent_dashboard.topics")
+local prompts = require("agent_dashboard.prompts")
+do
+    local date = os.date
+    os.date = function() return "October 06, 2026" end
+    assert(prompts.updated_date() == "October 6, 2026")
+    os.date = function() return "October 16, 2026" end
+    assert(prompts.updated_date() == "October 16, 2026")
+    os.date = date
+end
 local root = vim.fn.tempname()
 local project = root .. "/project"
 vim.fn.mkdir(project .. "/nested", "p")
@@ -13,6 +22,12 @@ local created, err = topics.create("billing-migration", {
     description = "Move invoices to the new service.",
 })
 assert(created and created.title == "Billing migration", err)
+local template = table.concat(vim.fn.readfile(topics.brief_path("billing-migration")), "\n")
+assert(template:find("# Billing migration: brief.\n\nUpdated " .. prompts.updated_date() .. ".", 1, true))
+local headings = {}
+for heading in template:gmatch("\n## ([^\n]+)") do headings[#headings + 1] = heading end
+assert(vim.deep_equal(headings, { "Purpose and scope.", "Key facts.", "Where things live.",
+    "Decisions and constraints.", "Current state.", "Open questions." }))
 assert(topics.create("../escape") == nil)
 assert(topics.create("billing-migration") == nil)
 local metadata_path = root .. "/topics/billing-migration/topic.md"
@@ -90,10 +105,17 @@ assert(topics.accept_proposal("billing-migration"))
 assert(topics.list()[1].new_notes == 0)
 
 local previous_home = vim.env.HOME
+assert(topics.create("custom-brief", { brief = "# Custom brief\n\nKeep my own structure." }))
+assert(table.concat(vim.fn.readfile(topics.brief_path("custom-brief")), "\n")
+    == "# Custom brief\n\nKeep my own structure.")
 vim.env.HOME = root .. "/home"
 local skill = topics.export_skill("billing-migration")
 assert(skill and vim.fn.filereadable(skill) == 1)
-assert(table.concat(vim.fn.readfile(skill), "\n"):find("brief.md", 1, true))
+local skill_text = table.concat(vim.fn.readfile(skill), "\n")
+assert(skill_text:find(prompts.skill_body(topics.brief_path("billing-migration"),
+    root .. "/topics/billing-migration/notes"), 1, true))
+assert(skill_text:find("may be stale", 1, true))
+assert(skill_text:find("read the ones relevant to the task instead of all of them up front", 1, true))
 vim.env.HOME = previous_home
 
 if vim.fn.executable("jq") == 1 then

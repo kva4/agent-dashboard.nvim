@@ -298,10 +298,10 @@ function M.create(id, opts)
         title = title, status = opts.status or "active", created = os.date("%Y-%m-%d"), projects = projects,
     }, opts.description or "")
     vim.fn.writefile(vim.split(frontmatter, "\n", { plain = true }), join(path, "topic.md"))
-    local brief = opts.brief or "# " .. title .. ": brief.\n\nUpdated " .. os.date("%B %d, %Y") .. ".\n\n"
-        .. "## Goal and desired outcome.\n\n## Scope and non-goals.\n\n## Requirements and acceptance criteria.\n\n"
-        .. "## Systems and responsibilities.\n\n## Current understanding.\n\n## Decisions made.\n\n"
-        .. "## Open questions.\n\n## Where to look next.\n"
+    local brief = opts.brief or "# " .. title .. ": brief.\n\nUpdated "
+        .. require("agent_dashboard.prompts").updated_date() .. ".\n\n"
+        .. "## Purpose and scope.\n\n## Key facts.\n\n## Where things live.\n\n"
+        .. "## Decisions and constraints.\n\n## Current state.\n\n## Open questions.\n"
     vim.fn.writefile(vim.split(brief, "\n", { plain = true }), join(path, "brief.md"))
     return topic_metadata(id)
 end
@@ -482,8 +482,8 @@ function M.export_skill(id)
     local description = topic.description:gsub("\n", " ")
     if description == "" then description = "Reference knowledge for " .. topic.title end
     local content = "---\nname: topic-" .. id .. "\ndescription: " .. yaml_scalar(description)
-        .. "\n---\n\n# " .. topic.title .. "\n\nRead " .. join(topic.dir, "brief.md")
-        .. " before working on this topic. Detailed notes are in " .. join(topic.dir, "notes") .. ".\n"
+        .. "\n---\n\n# " .. topic.title .. "\n\n"
+        .. require("agent_dashboard.prompts").skill_body(join(topic.dir, "brief.md"), join(topic.dir, "notes"))
     vim.fn.writefile(vim.split(content, "\n", { plain = true }), file)
     return file
 end

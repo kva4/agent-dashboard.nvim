@@ -87,12 +87,16 @@ case "$brief_limit" in ''|*[!0-9]*|0) brief_limit=150 ;; esac
 if [ "$action" = "start" ] && [ -n "$topic_dir" ]; then
     brief="$topic_dir/brief.md"
     if [ -r "$brief" ]; then
-        printf 'You are working on the topic "%s". Read its notes when useful: %s/notes\n' \
-            "$topic" "$topic_dir"
+        printf 'You are working on the topic "%s". The brief below summarizes what earlier sessions learned.\n' "$topic"
+        printf 'Treat it as a starting point, not ground truth: it may be stale, so verify claims against the code\nor sources before relying on them, and tell the user when a claim looks outdated.\n'
+        printf 'Detailed notes are in %s/notes, one dated Markdown file per finding. Read the ones relevant to\nthe task instead of all of them up front.\n' "$topic_dir"
         printf 'Topic brief (%s):\n---\n' "$brief"
         count=0
         while IFS= read -r line || [ -n "$line" ]; do
-            [ "$count" -lt "$brief_limit" ] || break
+            if [ "$count" -ge "$brief_limit" ]; then
+                printf '(Brief truncated at %s lines. Read %s for the rest.)\n' "$brief_limit" "$brief"
+                break
+            fi
             printf '%s\n' "$line"
             count=$((count + 1))
         done < "$brief"

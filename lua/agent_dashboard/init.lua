@@ -2,6 +2,7 @@ local M = {}
 local tmux = require("agent_dashboard.tmux")
 local session_source = require("agent_dashboard.sessions")
 local topic_source = require("agent_dashboard.topics")
+local prompts = require("agent_dashboard.prompts")
 local capture = require("agent_dashboard.capture")
 local capture_ui = require("agent_dashboard.capture_ui")
 
@@ -24,6 +25,8 @@ local config = {
     capture_models = {
         claude = "claude-sonnet-5-5",
         opencode = "openai/gpt-6.1-sol",
+        note = {},
+        brief = {},
     },
     notifications = { enabled = true, macos = false },
     keys = { list = "<C-h>", next = "<M-j>", previous = "<M-k>", hide = "<C-q>", escape = "jk" },
@@ -213,7 +216,7 @@ local function render()
             rows[#lines] = { slot = id, capture = true }
             local actions = capture_ui.row_items()
             if #actions > 0 then
-                local labels = { error = "e errors", open = "o open", review = "r review", retry = "R retry", cancel = "X cancel", dismiss = "d dismiss" }
+                local labels = { error = "e errors", open = "o open", review = "r review", accept = "A accept", retry = "R retry", cancel = "X cancel", dismiss = "d dismiss" }
                 local hints = {}; for _, action in ipairs(actions) do hints[#hints + 1] = labels[action] or action end
                 lines[#lines + 1] = "   c capture · " .. table.concat(hints, " · ")
                 rows[#lines] = { slot = id, capture = true }
@@ -233,9 +236,10 @@ local function render()
         rows[#lines] = { capture = true }
         local actions = capture_ui.row_items()
         if #actions > 0 then
-            local labels = { error = "e errors", open = "o open", review = "r review", retry = "R retry", cancel = "X cancel", dismiss = "d dismiss" }
+            local labels = { error = "e errors", open = "o open", review = "r review", accept = "A accept", retry = "R retry", cancel = "X cancel", dismiss = "d dismiss" }
             local hints = {}; for _, action in ipairs(actions) do hints[#hints + 1] = labels[action] or action end
             lines[#lines + 1] = "   Capture: " .. table.concat(hints, " · ")
+            rows[#lines] = { capture = true }
         end
     end
     local topic_list = {}
@@ -490,8 +494,7 @@ local function deliver_opencode_topic(id, term)
     term.pending_topic = {
         topic = topic.id, session = term.session_id,
         deadline = vim.uv.hrtime() + (config.topics.opencode_prompt_timeout_ms or 15000) * 1000000,
-        prompt = 'Before we start, read "' .. brief .. '". Detailed notes are in "' .. topic.dir
-            .. '/notes"; read them when useful.',
+        prompt = prompts.opencode_delivery(brief, topic.dir .. "/notes"),
     }
 end
 
@@ -833,14 +836,11 @@ function M.consolidate(id)
     local function send(topic_id)
         local topic = topic_source.get(topic_id)
         if not topic then vim.notify("Topic not found: " .. tostring(topic_id), vim.log.levels.WARN); return end
-        local default_prompt = "Consolidate the unconsolidated notes in {{notes_path}} into {{proposal_path}}. "
-            .. "Read the current brief at {{brief_path}} first. Preserve accurate existing knowledge, remove stale "
-            .. "or contradicted claims, and include an Updated date. Do not edit brief.md directly; the proposal "
-            .. "will be reviewed before it replaces the brief."
         local prompt = fill_prompt(type(config.topics.prompts) == "table" and config.topics.prompts.consolidate
-            or default_prompt, {
+            or prompts.consolidate_default(), {
             title = topic.title, notes_path = topic.dir .. "/notes", brief_path = topic.dir .. "/brief.md",
             proposal_path = topic.dir .. "/brief.proposed.md",
+            brief_guidance = prompts.brief_guidance(), brief_max_lines = topic_source.brief_max_lines(),
         })
         if send_topic_prompt(topic_id, prompt,
             "Please consolidate the topic notes using the pasted instructions. ") then
@@ -854,6 +854,48 @@ function M.consolidate(id)
     local term = terminals[selected]
     if term and term.topic_id then return send(term.topic_id) end
     choose_topic(send)
+end
+
+local function canonical_path(path)
+    return vim.uv.fs_realpath(path) or vim.fn.fnamemodify(path, ":p")
+end
+
+local function accept_brief_proposal(id)
+    local topic = topic_source.get(id)
+    local proposal = topic and (topic.dir .. "/brief.proposed.md")
+    if proposal then
+        local expected = canonical_path(proposal)
+        for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+            if vim.api.nvim_buf_is_loaded(buffer)
+                and canonical_path(vim.api.nvim_buf_get_name(buffer)) == expected
+                and vim.bo[buffer].modified then
+                local saved, save_error = pcall(vim.api.nvim_buf_call, buffer, function() vim.cmd("write") end)
+                if not saved then return nil, tostring(save_error) end
+            end
+        end
+    end
+    local ok, err = topic_source.accept_proposal(id)
+    if not ok then return nil, err end
+    local job = capture.current()
+    if job and job.state == "complete" and job.request.kind == "brief" and job.request.topic_id == id then
+        capture.dismiss()
+    end
+    vim.notify("Accepted topic brief proposal", vim.log.levels.INFO)
+    if err then vim.notify(err, vim.log.levels.INFO) end
+    refresh_topics()
+    render()
+    local brief = topic_source.brief_path(id)
+    if brief then
+        local expected = canonical_path(brief)
+        for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+            if vim.api.nvim_buf_is_loaded(buffer)
+                and canonical_path(vim.api.nvim_buf_get_name(buffer)) == expected then
+                pcall(vim.api.nvim_buf_call, buffer, function() vim.cmd("edit!") end)
+            end
+        end
+        edit_in_editor(brief)
+    end
+    return true, err
 end
 
 function M.review_consolidation(id)
@@ -908,6 +950,8 @@ local function show_help()
         "  n           Browse notes on a topic",
         "  D / C       Topic row: distill / consolidate",
         "  c           Slot/topic row: capture findings from the named source",
+        "  r           Review a brief capture proposal",
+        "  A           Accept proposal on a topic/brief capture row",
         "  y           Copy the session id of the row",
         "  D           Recent row: delete the session",
         "  ?           Show this help",
@@ -1072,6 +1116,17 @@ local function list_keymaps()
     vim.keymap.set("n", "o", function() capture_action("open") end, opts)
     vim.keymap.set("n", "e", function() capture_action("error") end, opts)
     vim.keymap.set("n", "r", function() capture_action("review") end, opts)
+    vim.keymap.set("n", "A", function()
+        local row = rows[vim.api.nvim_win_get_cursor(list_win)[1]]
+        if row and row.topic then
+            local ok, err = accept_brief_proposal(row.topic.id)
+            if not ok then vim.notify(err, vim.log.levels.WARN) end
+        elseif row and (row.capture or row.slot and row.slot == capture_ui.source_slot()) then
+            capture_action("accept")
+        else
+            vim.notify("Select a topic or completed brief capture row to accept", vim.log.levels.INFO)
+        end
+    end, opts)
     vim.keymap.set("n", "R", function() capture_action("retry") end, opts)
     vim.keymap.set("n", "X", function() capture_action("cancel") end, opts)
     vim.keymap.set("n", "d", function() capture_action("dismiss") end, opts)
@@ -1318,47 +1373,18 @@ local function handle_consolidate_command(args, brief_mode)
             id = term and term.topic_id
         end
         if not id then vim.notify("Specify a topic id", vim.log.levels.WARN); return end
-        local ok, err
         if action == "accept" then
-            local topic = topic_source.get(id)
-            local proposal = topic and (topic.dir .. "/brief.proposed.md")
-            if proposal then
-                local expected = vim.fn.fnamemodify(proposal, ":p")
-                for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
-                    if vim.api.nvim_buf_is_loaded(buffer)
-                        and vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buffer), ":p") == expected
-                        and vim.bo[buffer].modified then
-                        local saved, save_error = pcall(vim.api.nvim_buf_call, buffer, function()
-                            vim.cmd("write")
-                        end)
-                        if not saved then vim.notify(tostring(save_error), vim.log.levels.ERROR); return end
-                    end
-                end
-            end
-            ok, err = topic_source.accept_proposal(id)
-        else
-            ok, err = topic_source.reject_proposal(id)
+            local ok, err = accept_brief_proposal(id)
+            if not ok then vim.notify(err, vim.log.levels.ERROR) end
+            return
         end
+        local ok, err = topic_source.reject_proposal(id)
         if not ok then vim.notify(err, vim.log.levels.ERROR)
         else
-            vim.notify(action == "accept" and "Accepted topic brief proposal" or "Rejected topic brief proposal",
-                vim.log.levels.INFO)
+            vim.notify("Rejected topic brief proposal", vim.log.levels.INFO)
             if err then vim.notify(err, vim.log.levels.INFO) end
             refresh_topics()
             render()
-            if action == "accept" then
-                local brief = topic_source.brief_path(id)
-                if brief then
-                    local expected = vim.fn.fnamemodify(brief, ":p")
-                    for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
-                        if vim.api.nvim_buf_is_loaded(buffer)
-                            and vim.fn.fnamemodify(vim.api.nvim_buf_get_name(buffer), ":p") == expected then
-                            pcall(vim.api.nvim_buf_call, buffer, function() vim.cmd("edit!") end)
-                        end
-                    end
-                    edit_in_editor(brief)
-                end
-            end
         end
     elseif action == "review" then
         if not id then
@@ -1390,7 +1416,13 @@ function M.setup(opts)
         end })
     capture_ui.setup(capture, {
         review_brief = function(id) M.review_consolidation(id) end,
+        accept_brief = accept_brief_proposal,
         open_result = function(path) edit_in_editor(path) end,
+        create_topic = function(id, source)
+            local topic, err = topic_source.create(id, { projects = { source.project } })
+            if topic then refresh_topics() end
+            return topic, err
+        end,
         validate_retry = function(request)
             local source = request.source
             local term, entry = terminals[source.slot_id], states[source.slot_id]

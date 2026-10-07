@@ -1,7 +1,7 @@
--- Capture request editor and compact job controls. Execution and persistence belong
--- to capture.lua; this module deliberately never sends data to an agent terminal.
+-- Capture request editor and compact job controls. Capture execution and result
+-- persistence belong to capture.lua; this module never sends data to an agent terminal.
 local M = {}
-local backend, dialog, review_brief, open_result, validate_retry
+local backend, dialog, review_brief, accept_brief, open_result, validate_retry, create_topic
 local opening = false
 local diagnostic_windows = {}
 
@@ -23,7 +23,9 @@ local function redraw()
         " Project: " .. tostring(d.request.source.project),
         " Topic:   " .. (topic and ((topic.title or topic.id) .. " [" .. topic.id .. "]") or "<choose topic>"),
         " Focus:   " .. (focus ~= "" and focus or "<optional; press Enter to edit>"),
-        "", " [s] Save findings", " [b] Propose brief",
+        " Notes model: " .. tostring(d.models.note or "<harness default>") .. " [m]",
+        " Brief model: " .. tostring(d.models.brief or "<harness default>") .. " [M]",
+        "", " [n] New topic", " [s] Save findings", " [b] Propose brief",
     }
     if dialog.error then lines[#lines + 1] = " Error: " .. dialog.error end
     lines[#lines + 1] = ""
@@ -43,6 +45,7 @@ local function submit(kind)
     if not topic then return fail("Choose a topic first") end
     local request = vim.deepcopy(d.request)
     request.kind, request.topic_id = kind, topic.id
+    request.model = d.models[kind]
     request.focus = d.focus ~= "" and d.focus or nil
     if d.validate then
         local valid, validation_error = d.validate(request)
@@ -57,14 +60,16 @@ function M.setup(api, options)
     backend = api
     options = options or {}
     review_brief, open_result = options.review_brief, options.open_result
+    accept_brief = options.accept_brief
     validate_retry = options.validate_retry
+    create_topic = options.create_topic
 end
 function M.open(request, topics, on_change, restore, validate)
     close(false)
     vim.cmd("stopinsert")
     if vim.o.columns < 50 or vim.o.lines < 15 then return nil, "Capture window requires at least 50 columns and 15 lines" end
     local buf = vim.api.nvim_create_buf(false, true)
-    local width, height = math.min(72, vim.o.columns - 6), 11
+    local width, height = math.min(72, vim.o.columns - 6), math.min(13, vim.o.lines - 4)
     opening = true
     local win = vim.api.nvim_open_win(buf, true, { relative = "editor", style = "minimal", border = "rounded",
         title = " Capture from selected agent ", title_pos = "center", width = width, height = height,
@@ -77,24 +82,90 @@ function M.open(request, topics, on_change, restore, validate)
     if request.topic_id then for i, t in ipairs(choices) do if t.id == request.topic_id then index = i end end end
     dialog = { buf = buf, win = win, request = vim.deepcopy(request), topics = choices,
         topic_index = #choices > 0 and index or 0, focus = request.focus or "", row = 3,
+        models = {},
         restore = restore, on_change = on_change, validate = validate }
+    for _, kind in ipairs({ "note", "brief" }) do
+        local candidate = vim.deepcopy(request)
+        candidate.kind = kind
+        local options, err
+        if backend.model_options then options, err = backend.model_options(candidate) end
+        dialog.models[kind] = options and options.current or request.model
+        if err and kind == request.kind then dialog.error = err end
+    end
     if validate and choices[index] then
         local initial = vim.deepcopy(request)
         initial.topic_id = choices[index].id
+        initial.model = dialog.models[initial.kind]
         local valid, err = validate(initial)
         if not valid then dialog.error = err end
     end
     local function map(key, fn) vim.keymap.set("n", key, fn, { buffer = buf, nowait = true, silent = true }) end
-    local navigable = { 3, 4, 6, 7 }
+    local navigable = { 3, 4, 5, 6, 8, 9, 10 }
     local function move(delta)
         local index = 1
         for i, row in ipairs(navigable) do if row == dialog.row then index = i end end
         dialog.row = navigable[(index - 1 + delta) % #navigable + 1]
         redraw()
     end
+    local function new_topic()
+        if not create_topic then return fail("Topic creation is unavailable") end
+        local d = dialog
+        vim.ui.input({ prompt = "New topic ID (lowercase letters, numbers, hyphens): " }, function(id)
+            if dialog ~= d or id == nil or vim.trim(id) == "" then return end
+            local topic, err = create_topic(vim.trim(id), vim.deepcopy(d.request.source))
+            if not topic then return fail(err or "Could not create topic") end
+            d.topics[#d.topics + 1] = vim.deepcopy(topic)
+            table.sort(d.topics, function(a, b) return a.id < b.id end)
+            for i, item in ipairs(d.topics) do if item.id == topic.id then d.topic_index = i end end
+            d.error, d.row = nil, 3
+            redraw()
+            if d.on_change then d.on_change() end
+        end)
+    end
+    local function choose_model(kind)
+        local d = dialog
+        local candidate = vim.deepcopy(d.request)
+        candidate.kind = kind
+        local options = backend.model_options and backend.model_options(candidate) or { default = candidate.model, choices = {} }
+        local items, seen = {}, {}
+        local selected = d.models[kind]
+        if selected == nil then
+            items[#items + 1] = { label = "Use configured default (harness default) (selected)" }
+        end
+        local function add(model)
+            if type(model) ~= "string" or seen[model] then return end
+            seen[model] = true
+            items[#items + 1] = { model = model, label = model .. (model == selected and " (selected)" or "") }
+        end
+        add(selected)
+        for _, model in ipairs(options.choices) do add(model) end
+        if selected ~= nil or options.default ~= nil then
+            items[#items + 1] = { model = options.default, label = "Use configured default (" .. tostring(options.default or "harness default") .. ")" }
+        end
+        items[#items + 1] = { custom = true, label = "Enter model ID…" }
+        local function apply(model)
+            if dialog ~= d then return end
+            if backend.validate_model then
+                local valid, err = backend.validate_model(d.request.source.harness, model)
+                if not valid then return fail(err) end
+            end
+            d.models[kind], d.error = model, nil
+            redraw()
+        end
+        local label = kind == "note" and "Notes" or "Brief"
+        vim.ui.select(items, { prompt = label .. " capture model (" .. d.request.source.harness .. ")",
+            format_item = function(item) return item.label end }, function(item)
+            if not item or dialog ~= d then return end
+            if item.custom then
+                vim.ui.input({ prompt = label .. " model ID: ", default = type(selected) == "string" and selected or "" }, function(value)
+                    if value ~= nil and dialog == d then apply(vim.trim(value)) end
+                end)
+            else apply(item.model) end
+        end)
+    end
     local function activate()
         if dialog.row == 3 then
-            if #dialog.topics == 0 then return fail("No topics available") end
+            if #dialog.topics == 0 then return fail("No topics available; press n to create one") end
             vim.ui.select(dialog.topics, { prompt = "Capture destination topic", format_item = function(t) return t.title .. " (" .. t.id .. ")" end }, function(t)
                 if t and dialog then for i, item in ipairs(dialog.topics) do if item.id == t.id then dialog.topic_index = i end end; dialog.error = nil; redraw() end
             end)
@@ -102,12 +173,17 @@ function M.open(request, topics, on_change, restore, validate)
             vim.ui.input({ prompt = "Capture focus (optional): ", default = dialog.focus }, function(value)
                 if value ~= nil and dialog then dialog.focus = value; redraw() end
             end)
-        elseif dialog.row == 6 then submit("note")
-        elseif dialog.row == 7 then submit("brief") end
+        elseif dialog.row == 5 then choose_model("note")
+        elseif dialog.row == 6 then choose_model("brief")
+        elseif dialog.row == 8 then new_topic()
+        elseif dialog.row == 9 then submit("note")
+        elseif dialog.row == 10 then submit("brief") end
     end
     map("<Tab>", function() move(1) end); map("<S-Tab>", function() move(-1) end)
     map("j", function() move(1) end); map("k", function() move(-1) end)
     map("<CR>", activate); map("<Space>", activate)
+    map("n", new_topic)
+    map("m", function() choose_model("note") end); map("M", function() choose_model("brief") end)
     map("s", function() submit("note") end); map("b", function() submit("brief") end)
     map("<Esc>", function() close(true) end); map("q", function() close(true) end)
     redraw()
@@ -116,11 +192,20 @@ end
 function M.action(action, on_change)
     local job = current()
     if not job then return false, "No capture result" end
-    if action == "error" then
+    if action == "accept" then
+        if job.state ~= "complete" or not job.request or job.request.kind ~= "brief" then
+            return false, "No completed brief proposal to accept"
+        end
+        if not accept_brief then return false, "Brief acceptance is unavailable" end
+        local ok, err = accept_brief(job.request.topic_id)
+        if ok and on_change then on_change() end
+        return ok, err
+    elseif action == "error" then
         local buf = vim.api.nvim_create_buf(false, true)
         local source = job.request and job.request.source or {}
         local lines = { "Capture diagnostics", "", "State: " .. tostring(job.state),
             "Source: " .. tostring(source.harness) .. " / " .. tostring(source.session),
+            "Model: " .. tostring(job.request and job.request.model or "harness default"),
             "Save error: " .. tostring(job.error or "none"),
             "Helper cleanup error: " .. tostring(job.cleanup_error or "none"),
             "Saved path: " .. tostring(job.path or "none"),
@@ -184,6 +269,7 @@ function M.row_items()
     elseif job.state == "failed" then return { "error", "open", "retry", "dismiss" }
     elseif job.state == "complete" then
         local result = { job.request.kind == "brief" and "review" or "open" }
+        if job.request.kind == "brief" then result[#result + 1] = "accept" end
         if job.cleanup_error then result[#result + 1] = "error" end
         result[#result + 1] = "dismiss"
         return result

@@ -27,6 +27,9 @@ See the project README for lazy.nvim setup and Claude/OpenCode reporter setup.
       notifications = { enabled = true, macos = false },
       capture_models = {
         claude = "claude-sonnet-5-5", opencode = "openai/gpt-6.1-sol",
+        -- Optional overrides by capture kind and source harness:
+        -- note = { claude = "sonnet", opencode = "anthropic/claude-sonnet-4-6" },
+        -- brief = { claude = "opus", opencode = "openai/gpt-6.1-sol" },
       },
       topics = { enabled = true, dir = vim.fn.stdpath("data") .. "/agent-dashboard/topics" },
     })
@@ -79,6 +82,9 @@ attaches or detaches a topic on a slot. On a topic row,
 deletes the session after confirmation.
 |c| on a slot opens capture from that source; on a topic it uses that destination
 and the currently selected source slot. |?| opens key help, and |q| hides the dashboard.
+|A| (Shift-A) accepts a pending brief proposal on a topic row or a completed brief
+capture/source-slot row. Review first with |r| on the capture result. Lowercase
+|a| still adds a terminal slot.
 
 Return from the sidebar to the active terminal with <Tab>, <C-l>, l, <Right>,
 or <C-w>l. These focus the terminal and enter terminal mode without opening the
@@ -164,23 +170,49 @@ Each slot supports one topic. Attachments last for the current Neovim process.
 Capture requires an idle, reported Claude Code or OpenCode session. Press <M-c>
 in its agent terminal (default keys.capture; configurable), or use the dashboard
 capture action. Choose a topic, optional focus, and Save findings or Propose
-brief. The additional model request runs separately; no prompt is pasted into
+brief. In the capture popup, |n| (or Enter on New topic) prompts for a new topic
+ID: lowercase letters, numbers, and hyphens. It selects the new topic as the
+capture destination and associates it with the source session's project without
+changing the slot's attachment. Then |s| saves findings or |b| proposes a brief.
+The popup also shows Notes model and Brief model. |m| selects the note model and
+|M| (Shift-M) selects the brief model; Tab/Enter activates either field. Pick a
+configured/recently used model, Enter model ID… for another model, or Use
+configured default to return to the setup setting. OpenCode IDs use provider/model;
+Claude accepts an alias or full model ID.
+The additional model request runs separately; no prompt is pasted into
 the source terminal and nothing is submitted there. Save findings writes a
 distinct note with project/session provenance. Propose brief is session-based,
 distinct from note consolidation, and must be reviewed and explicitly accepted
 or rejected. Capture is not run automatically after a turn.
+Notes have a short lead and a session-shaped body; briefs orient future sessions
+with durable facts, decisions, constraints, status, and pointers to details.
 
 Set capture_models.claude and capture_models.opencode in setup() to choose the
-model for both note and brief capture by source harness. Claude accepts a model
-alias or full model ID; OpenCode requires a provider/model identifier. Defaults
-are claude-sonnet-5-5 for Claude and openai/gpt-6.1-sol for OpenCode.
-Consolidation uses the model
-in the selected agent terminal.
+shared model for note and brief capture by source harness. To choose separate
+models, set capture_models.note.{harness} for Save findings and
+capture_models.brief.{harness} for Propose brief, where {harness} is claude or
+opencode. Kind-specific values override the shared harness setting; omitted
+values fall back to it. Existing configurations remain valid. Restart Neovim
+after changing setup configuration.
+
+The popup preselects the last model used independently for notes/briefs and
+Claude/OpenCode. Before first use, it selects the configured default. Preferences
+are saved only when capture starts, not when a selection is edited or cancelled,
+and survive Neovim restarts. They are stored in capture_dir/model-history.json;
+capture_dir defaults to stdpath("state") .. "/agent-dashboard/capture".
+
+Claude accepts a model alias or full model ID; OpenCode requires a provider/model
+identifier available in your configured providers. Shared defaults are
+claude-sonnet-5-5 for Claude and openai/gpt-6.1-sol for OpenCode. Consolidation
+uses the model in the selected agent terminal.
 
 The sidebar reports capture state. While active, |X| cancels. Failed results
 offer |o| open, |R| retry, and |d| dismiss; complete results offer |o| open,
-|r| review, and |d| dismiss. Cancelled results can be dismissed. If the source
-slot disappears, the latest capture is listed in the orphan section. Known
+|r| review, |A| accept a brief proposal, and |d| dismiss. Acceptance saves any
+edited proposal buffer, promotes it to brief.md, opens the accepted brief, and
+dismisses the matching completed capture result. Cancelled results can be
+dismissed. If the source slot disappears, the latest capture is listed in the
+orphan section. Known
 journaled helpers are filtered from recent sessions, and cleanup is retried at
 startup; the plugin does not guess helper identity by recency. If saving the
 topic file fails, generated text is retained at a durable local recovery path

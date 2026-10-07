@@ -109,14 +109,12 @@ health check warns when a brief goes over it. The recommended sections are:
 
 Updated September 30, 2026.
 
-## Goal and desired outcome.
-## Scope and non-goals.
-## Requirements and acceptance criteria.
-## Systems and responsibilities.
-## Current understanding.
-## Decisions made.
+## Purpose and scope.
+## Key facts.
+## Where things live.
+## Decisions and constraints.
+## Current state.
 ## Open questions.
-## Where to look next.
 ```
 
 ### Notes.
@@ -142,6 +140,8 @@ consolidated: false
 - Notes are append-only by convention. You correct them by editing, not by deleting history.
 
 ## Capture.
+
+Captured notes start with a short lead summary, then use descriptive sections that fit the session.
 
 ### Note from the editor.
 
@@ -210,6 +210,8 @@ the Lua API is `dashboard.brief(id, focus)`. For IDs matching a review subcomman
 
 `:AgentDashboard consolidate [topic]` pastes a prompt asking the selected agent to merge
 unconsolidated notes into `brief.proposed.md`. Review it and press Enter to submit.
+Custom `topics.prompts.consolidate` templates can use `{{brief_guidance}}` for the shared orientation
+rules and `{{brief_max_lines}}` for the configured line limit.
 
 1. The agent writes its proposal to `brief.proposed.md`, not to `brief.md`.
 2. Run `:AgentDashboard consolidate review [topic]` to open a diff between `brief.md` and the proposal.

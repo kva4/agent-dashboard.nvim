@@ -1,5 +1,6 @@
 -- Isolated topic capture. Only this coordinator writes results and owns helpers.
 local M = {}
+local model_history = require("agent_dashboard.capture_model_history")
 local latest, config, sequence = nil, {}, 0
 local pending = {}
 local active_states = { starting = true, capturing = true, saving = true, cleaning = true }
@@ -66,54 +67,6 @@ end
 
 local function adapter_for(harness)
     return config.adapters and config.adapters[harness] or require("agent_dashboard.capture." .. harness)
-end
-
-local function prompt(job)
-    local req = job.request
-    local text = "Return only Markdown content, without frontmatter or a surrounding code fence. "
-        .. "Do not use tools, read files, or modify anything. The plugin saves your returned text.\n"
-        .. "Base findings only on the conversation inherited from the source investigation. "
-        .. "Preserve uncertainty and qualifications where the source conversation expresses them. "
-        .. "Include supporting file paths and contracts where the source established them. "
-        .. "Do not invent connections to the destination topic or import other projects' claims.\n"
-        .. "Destination topic (a storage label, not additional evidence): " .. job.topic_title .. "\n"
-    if req.focus and vim.trim(req.focus) ~= "" then
-        text = text .. "Requested focus: " .. req.focus .. "\n"
-            .. "Exclude unrelated findings; retain caveats needed to understand this focus. "
-            .. "If there are no findings on this subject, say so.\n"
-    end
-    if req.kind == "brief" then
-        text = text .. "Propose a complete revised topic brief. Preserve accurate existing sections outside "
-            .. "the focus. Distinguish desired outcomes from current behavior and assumptions. "
-            .. "This is a session-based update, not note consolidation. Keep within "
-            .. require("agent_dashboard.topics").brief_max_lines() .. " lines.\n"
-            .. "Current brief supplied explicitly:\n<current-brief>\n" .. job.snapshot.text .. "\n</current-brief>"
-    else
-        text = text .. "Create one self-contained explanatory note with a # Title describing its subject. "
-            .. "Organize the selected material around the user's questions or requests, or meaningful aspects of its subject, "
-            .. "using descriptive headings. Combine related questions and follow-up elaborations into "
-            .. "coherent explanations rather than reproducing the conversation turn by turn. "
-            .. "Preserve useful answers about how things work and why, including mechanisms, dependencies, "
-            .. "examples, and additional context established through follow-up questions. "
-            .. "Use paragraphs, bullets, or question-based headings as appropriate to the content. "
-            .. "Do not impose generic sections such as 'Confirmed behavior', 'Hypotheses', 'Proposed changes', "
-            .. "or 'Open questions'. Include decisions, proposals, or unanswered questions only if they were "
-            .. "actually discussed and are relevant; do not invent them to fill a template. "
-            .. "The topic brief and other notes are not evidence for this note."
-        if req.focus and vim.trim(req.focus) ~= "" then
-            text = text .. "\n\nScope for this note: the requested focus below is the selection boundary, "
-                .. "not merely an emphasis within a summary of the whole session. "
-                .. "If the focus lists several questions or subjects, cover only those items and their relevant "
-                .. "answers and follow-up elaborations. Do not cover other questions from the session. "
-                .. "Include additional context only when it is necessary to explain a selected item, and keep "
-                .. "that context minimal. Sharing a project, service, or broad topic is not sufficient reason "
-                .. "to include another finding. Apply this boundary to the title, every heading, paragraph, "
-                .. "bullet, and example. Before returning the note, remove anything outside it. "
-                .. "If a selected item was not answered, say that briefly instead of substituting unrelated material.\n"
-                .. "Requested focus for this note:\n" .. vim.trim(req.focus)
-        end
-    end
-    return text
 end
 
 local function finish_cleanup(job, ok, err)
@@ -196,6 +149,47 @@ local function complete(job, adapter, result, err)
     cleanup(job, adapter)
 end
 
+local function capture_model(request)
+    if request.model ~= nil then return request.model end
+    local models = config.models
+    if models == nil then return nil end
+    if type(models) ~= "table" then return nil, "Capture models must be a table" end
+    local overrides = models[request.kind]
+    if overrides ~= nil then
+        if type(overrides) ~= "table" then
+            return nil, "Capture models for " .. request.kind .. " must be a harness-to-model table"
+        end
+        if overrides[request.source.harness] ~= nil then return overrides[request.source.harness] end
+    end
+    return models[request.source.harness]
+end
+
+function M.model_options(request)
+    local configured = vim.deepcopy(request)
+    configured.model = nil
+    local default, err = capture_model(configured)
+    local harness = request.source.harness
+    local preferred = request.model
+    if preferred == nil then preferred = model_history.get(harness, request.kind) end
+    if preferred == nil then preferred = default end
+    local choices = {}
+    local function add(model)
+        if model ~= nil and model_history.validate(harness, model) and not vim.tbl_contains(choices, model) then
+            choices[#choices + 1] = model
+        end
+    end
+    add(preferred); add(default)
+    for _, kind in ipairs({ "note", "brief" }) do
+        configured.kind = kind
+        add(capture_model(configured))
+    end
+    if type(config.models) == "table" then add(config.models[harness]) end
+    for _, model in ipairs(model_history.choices(harness)) do add(model) end
+    return { current = preferred, default = default, choices = choices }, err
+end
+
+M.validate_model = model_history.validate
+
 function M.validate(request)
     if type(request) ~= "table" or (request.kind ~= "note" and request.kind ~= "brief")
         or type(request.topic_id) ~= "string" or type(request.source) ~= "table" then
@@ -209,15 +203,10 @@ function M.validate(request)
         return nil, "Capture requires an idle, reported Claude or OpenCode session"
     end
     if vim.fn.isdirectory(source.project) ~= 1 then return nil, "Source project directory no longer exists" end
-    local model = request.model or (config.models and config.models[source.harness])
-    if model ~= nil then
-        if type(model) ~= "string" or vim.trim(model) == "" then
-            return nil, "Capture model must be a non-empty string"
-        end
-        if source.harness == "opencode" and not model:match("^[^/]+/.+$") then
-            return nil, "OpenCode capture model must use provider/model format"
-        end
-    end
+    local model, model_error = capture_model(request)
+    if model_error then return nil, model_error end
+    local valid_model, validation_error = M.validate_model(source.harness, model)
+    if not valid_model then return nil, validation_error end
     local topics = require("agent_dashboard.topics")
     if not topics.get(request.topic_id) then return nil, "Topic not found: " .. request.topic_id end
     if request.kind == "brief" then
@@ -236,7 +225,7 @@ function M.start(request)
     if not valid then return nil, err end
     sequence = sequence + 1
     local frozen = vim.deepcopy(request)
-    frozen.model = frozen.model or (config.models and config.models[frozen.source.harness])
+    frozen.model = capture_model(frozen)
     local topics = require("agent_dashboard.topics")
     local snapshot
     if frozen.kind == "brief" then
@@ -275,7 +264,7 @@ function M.start(request)
     local callback = function(result, worker_err)
         vim.schedule(function() complete(job, adapter, result, worker_err) end)
     end
-    local handle, start_err = adapter.start(frozen, prompt(job), owned, callback)
+    local handle, start_err = adapter.start(frozen, require("agent_dashboard.prompts").capture(job), owned, callback)
     job.handle = handle
     if not handle then
         job.error = start_err or "Could not start capture worker"
@@ -284,6 +273,8 @@ function M.start(request)
     end
     job.pid = handle.pid
     transition(job, "capturing")
+    local remembered, remember_error = model_history.remember(frozen.source.harness, frozen.kind, frozen.model)
+    if not remembered then vim.notify("Capture started, but could not remember model: " .. tostring(remember_error), vim.log.levels.WARN) end
     return job
 end
 
@@ -429,6 +420,7 @@ function M.setup(options)
     config = options or {}
     config.dir = vim.fn.fnamemodify(config.dir or (vim.fn.stdpath("state") .. "/agent-dashboard/capture"), ":p"):gsub("/$", "")
     vim.fn.mkdir(config.dir, "p", 448)
+    model_history.setup(config.dir .. "/model-history.json")
     pending = {}
     M._reconcile()
     local group = vim.api.nvim_create_augroup("AgentDashboardCapture", { clear = true })
