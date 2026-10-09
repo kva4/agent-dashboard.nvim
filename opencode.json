@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "luna-worker": {
+      "description": "Implements delegated work packages using GPT-6 Luna.",
+      "mode": "subagent",
+      "model": "openai/gpt-6-luna",
+      "prompt": "Implement the supervisor's assigned work package. Follow repository instructions, run appropriate checks, and report changed files, verification results, and blockers."
+    }
+  }
+}

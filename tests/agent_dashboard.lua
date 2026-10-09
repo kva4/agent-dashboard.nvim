@@ -24,16 +24,49 @@ vim.fn.executable = function(name)
     if name == "opencode" then return 1 end
     return executable(name)
 end
+local list_mode, list_calls = "v2", {}
 vim.fn.jobstart = function(args, opts)
-    assert(vim.deep_equal(vim.list_slice(args, 1, 6), { "opencode", "session", "list", "--format", "json", "--max-count" }))
-    assert(args[7] == "10" or args[7] == "20")
+    list_calls[#list_calls + 1] = args
+    local api = args[2] == "api"
+    if api then
+        assert(#args == 11 and vim.deep_equal(vim.list_slice(args, 1, 10), { "opencode", "api", "session.list",
+            "--param", "directory=" .. opts.cwd, "--param", "parentID=null", "--param", "order=desc", "--param" }))
+        assert(args[11] == "limit=10" or args[11] == "limit=20")
+    else
+        assert(vim.deep_equal(vim.list_slice(args, 1, 6), { "opencode", "session", "list", "--format", "json", "--max-count" }))
+        assert(args[7] == "10" or args[7] == "20")
+    end
+    if list_mode == "spawn-failed" then return -1 end
     local request_cwd = opts.cwd
     vim.schedule(function()
-        local entries = request_cwd == cwd and {
+        if api and list_mode == "legacy" then opts.on_exit(1, 1); return end
+        if api and list_mode == "invalid" then opts.on_stdout(1, { "not JSON" }); opts.on_exit(1, 0); return end
+        if api and list_mode == "bad-envelope" then opts.on_stdout(1, { '{"data":false}' }); opts.on_exit(1, 0); return end
+        if list_mode == "failed" then opts.on_exit(1, 1); return end
+        local entries = request_cwd == cwd and list_mode ~= "empty" and {
             { id = "ses_recent", title = "OpenCode conversation", updated = os.time() * 1000 + 1000, directory = cwd },
             { id = "ses_elsewhere", updated = os.time() * 1000 + 2000, directory = "/elsewhere" },
         } or {}
-        opts.on_stdout(1, { vim.json.encode(entries) })
+        if api then
+            for _, entry in ipairs(entries) do
+                entry.location, entry.time = { directory = entry.directory }, { updated = entry.updated }
+                entry.directory, entry.updated = nil, nil
+            end
+            if #entries > 0 then
+                vim.list_extend(entries, {
+                    { id = "ses_child", parentID = "ses_recent", location = { directory = cwd }, time = { updated = os.time() * 1000 + 3000 } },
+                    { id = "invalid", location = { directory = cwd }, time = { updated = 1 } },
+                    { id = "ses_badtime", location = { directory = cwd }, time = { updated = "bad" } },
+                    { id = "ses_badlocation", location = "bad", time = { updated = 1 } },
+                    { id = "ses_missingtime", location = { directory = cwd } },
+                    false,
+                })
+            end
+            opts.on_stdout(1, { vim.json.encode({ data = entries, cursor = { next = vim.NIL, previous = vim.NIL } }) })
+        else
+            -- The V2 project-scoped CLI can return nothing even when directory-scoped sessions exist.
+            opts.on_stdout(1, { vim.json.encode(list_mode == "v2" and {} or entries) })
+        end
         opts.on_exit(1, 0)
     end)
     return 1
@@ -44,6 +77,7 @@ source.refresh(cwd, function(sessions) result = sessions end)
 assert(vim.wait(1000, function() return result ~= nil end))
 assert(#result == 3)
 assert(result[1].harness == "opencode" and result[1].id == "ses_recent")
+assert(#list_calls == 1 and list_calls[1][2] == "api", "V2 discovery queries by directory, not project identity")
 local claude = {}
 for _, session in ipairs(result) do if session.harness == "claude" then claude[session.id] = session end end
 assert(claude[uuid].title == "Claude conversation")
@@ -116,6 +150,23 @@ local limited
 source.refresh(cwd, function(sessions) limited = sessions end, { recent_limit = 1, claude_projects = root })
 assert(vim.wait(1000, function() return limited ~= nil end))
 assert(#limited == 1 and limited[1].id == "ses_recent")
+
+-- Older OpenCode releases still use their flat CLI output; failed or malformed
+-- API calls fall back, but a valid empty V2 response must not trigger a second query.
+for _, mode in ipairs({ "legacy", "invalid", "bad-envelope", "empty", "failed", "spawn-failed" }) do
+    list_mode, list_calls = mode, {}
+    local refreshed
+    source.refresh(cwd, function(sessions) refreshed = sessions end, { claude_projects = root })
+    assert(vim.wait(1000, function() return refreshed ~= nil end))
+    assert(#list_calls == (mode == "empty" and 1 or 2))
+    local found = false
+    for _, session in ipairs(refreshed) do
+        if session.id == "ses_recent" then found = session.updated > 0 and session.title == "OpenCode conversation" end
+    end
+    assert(found == (mode == "legacy" or mode == "invalid" or mode == "bad-envelope"), mode)
+    assert(#refreshed >= 3, "OpenCode failures do not hide Claude sessions")
+end
+list_mode = "v2"
 
 -- Deleting a Claude session removes its transcript and companion folder, and rejects bad ids.
 vim.fn.mkdir(dir .. "/" .. other_uuid, "p")

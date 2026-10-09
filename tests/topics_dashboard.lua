@@ -120,6 +120,13 @@ dialog_key("M")
 vim.ui.select, vim.ui.input = original_select, original_input
 assert(dialog.models.note == "selected-note-claude" and dialog.models.brief == "selected-brief-claude")
 assert(vim.api.nvim_get_current_buf() == dialog.buf and sends == 0)
+vim.ui.input = function(options, callback)
+    assert(options.prompt:find("Capture focus", 1, true))
+    callback("findings relevant to the new topic")
+end
+dialog_key("f")
+vim.ui.input = original_input
+assert(dialog.focus == "findings relevant to the new topic" and vim.api.nvim_get_current_buf() == dialog.buf)
 local original_start, submitted = capture.start
 capture.start = function(request) submitted = request; return { state = "capturing", request = request } end
 dialog_key("s")
@@ -127,6 +134,7 @@ capture.start = original_start
 assert(submitted and submitted.source.session == "test-session")
 assert(submitted.topic_id == "new-capture-topic")
 assert(submitted.model == "selected-note-claude", "the submitted action uses its selected model")
+assert(submitted.focus == "findings relevant to the new topic", "focus shortcut edits are included in capture")
 assert(vim.api.nvim_get_current_buf() == shell_buffer, "submission restores the source terminal buffer")
 assert(#vim.api.nvim_list_bufs() == before_buffers, "capture does not create another terminal")
 assert(sends == 0, "dashboard and terminal capture actions never send to source")

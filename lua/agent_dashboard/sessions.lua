@@ -231,33 +231,47 @@ function M.refresh(cwd, callback, opts)
     local claude = claude_sessions(cwd, limit, opts.claude_projects)
     if vim.fn.executable("opencode") == 0 then callback(merge({}, claude, limit)); return end
 
-    local stdout = {}
-    local job = vim.fn.jobstart({ "opencode", "session", "list", "--format", "json", "--max-count",
-        tostring(math.max(10, limit * 2)) }, {
-        cwd = cwd,
-        stdout_buffered = true,
-        on_stdout = function(_, data) stdout = data end,
-        on_exit = function(_, code)
-            local sessions = {}
-            if code == 0 then
-                local ok, parsed = pcall(vim.json.decode, table.concat(stdout, "\n"))
-                if ok and type(parsed) == "table" then
-                    for _, entry in ipairs(parsed) do
-                        if type(entry) == "table" and entry.directory == cwd
+    local count = tostring(math.max(10, limit * 2))
+    local function list(legacy)
+        -- V2's project-scoped CLI can miss sessions after project identity changes.
+        -- Query the directory explicitly, using the CLI's service/auth discovery.
+        local args = legacy and { "opencode", "session", "list", "--format", "json", "--max-count", count }
+            or { "opencode", "api", "session.list", "--param", "directory=" .. cwd,
+                "--param", "parentID=null", "--param", "order=desc", "--param", "limit=" .. count }
+        local stdout = {}
+        local job = vim.fn.jobstart(args, {
+            cwd = cwd,
+            stdout_buffered = true,
+            on_stdout = function(_, data) stdout = data end,
+            on_exit = function(_, code)
+                local ok, parsed = false, nil
+                if code == 0 then ok, parsed = pcall(vim.json.decode, table.concat(stdout, "\n")) end
+                local entries = ok and type(parsed) == "table" and (legacy and parsed or parsed.data) or nil
+                if not legacy and type(entries) ~= "table" then list(true); return end
+                local sessions = {}
+                for _, entry in ipairs(type(entries) == "table" and entries or {}) do
+                    if type(entry) == "table" then
+                        local directory = legacy and entry.directory
+                            or type(entry.location) == "table" and entry.location.directory
+                        local updated = legacy and entry.updated
+                            or type(entry.time) == "table" and entry.time.updated
+                        if directory == cwd and not entry.parentID
                             and type(entry.id) == "string" and entry.id:match("^ses_[%w]+$")
-                            and type(entry.updated) == "number" then
+                            and type(updated) == "number" then
                             sessions[#sessions + 1] = {
-                                harness = "opencode", id = entry.id, title = entry.title,
-                                updated = entry.updated,
+                                harness = "opencode", id = entry.id, title = entry.title, updated = updated,
                             }
                         end
                     end
                 end
-            end
-            callback(merge(sessions, claude, limit))
-        end,
-    })
-    if job <= 0 then callback(merge({}, claude, limit)) end
+                callback(merge(sessions, claude, limit))
+            end,
+        })
+        if job <= 0 then
+            if legacy then callback(merge({}, claude, limit)) else list(true) end
+        end
+    end
+    list(false)
 end
 
 return M

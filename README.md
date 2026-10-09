@@ -110,6 +110,9 @@ Slot names show session titles once known. A running session is opened in its
 existing slot, rather than resumed a second time. Only sessions belonging to
 Neovim's current working directory are shown. Recent sessions refresh when the
 dashboard opens and every 30 seconds while visible.
+OpenCode V2 sessions are queried by directory through `opencode api`, so changes
+to the repository's project identity do not hide existing conversations. Older
+OpenCode releases fall back to `opencode session list`.
 
 The status symbols are `!` blocked, `●` working, `○` idle, `✓` unseen completed
 turn, and `?` unknown. Status reports are optional; without one, the terminal
@@ -152,7 +155,9 @@ From an agent terminal, press `<M-c>` (Alt-C; configurable as
 dashboard, press `c` on a slot row to capture from that slot (using its attached
 topic when available), or on a topic row to capture that topic from the currently
 selected slot. Choose a destination topic, enter
-optional focus text, then select **Save findings** or **Propose brief**. In the
+optional focus text (`f` edits it directly), then select **Save findings** or
+**Propose brief**. Enter/Space activates the field under the cursor, including
+after arrow-key or mouse navigation. In the
 capture popup, press `n` (or activate **New topic**) to enter a new topic ID using
 lowercase letters, numbers, and hyphens. The new topic is selected as the capture
 destination and associated with the source session's project, without changing
@@ -183,8 +188,12 @@ separately from a successful save. OpenCode's API generates fork IDs server-side
 a crash before its fork response is journaled can leave an unidentified helper
 that cannot be automatically deleted. That case is reported explicitly.
 
-Capture has been checked with Claude Code 2.1.286 and OpenCode 1.18.30. OpenCode
-capture also uses `curl` for its private local server and `ps` for crash recovery.
+Capture has been checked with Claude Code 2.1.286, OpenCode 1.18.30, and OpenCode
+2.0.20 (using a local test provider). OpenCode V2 uses an authenticated private
+server and transient generation on a disposable fork, without an agent tool
+loop or changes to the source conversation. The selected capture model, including
+an optional `#variant`, is set only on the helper. Legacy V1 capture uses `curl`;
+both versions use `ps` for crash recovery.
 
 Choose shared defaults for note and brief capture by source harness:
 
@@ -226,8 +235,9 @@ cancelled. They persist across Neovim restarts in `model-history.json` under
 `capture_dir` (default: `stdpath("state") .. "/agent-dashboard/capture"`).
 
 Claude accepts a model alias or full model ID supported by Claude Code. OpenCode
-uses `provider/model` identifiers from your configured providers. The shared
-values in the first example are the plugin defaults. These settings apply to
+uses `provider/model` identifiers (optionally `#variant` in V2) from your
+configured providers. The shared values in the first example are the plugin
+defaults. These settings apply to
 isolated capture; consolidation uses the model in the selected agent terminal.
 
 The dashboard shows capture state in the sidebar. While active, `X` cancels;

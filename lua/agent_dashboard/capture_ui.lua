@@ -5,6 +5,19 @@ local backend, dialog, review_brief, accept_brief, open_result, validate_retry, 
 local opening = false
 local diagnostic_windows = {}
 
+-- Interactive fields keep fixed rows; diagnostics retain physical line breaks.
+local function single_line(value)
+    return (tostring(value):gsub("[\r\n]+", " "))
+end
+local function buffer_lines(values)
+    local lines = {}
+    for _, value in ipairs(values) do
+        local text = value:gsub("\r\n", "\n"):gsub("\r", "\n")
+        for _, line in ipairs(vim.split(text, "\n", { plain = true })) do lines[#lines + 1] = line end
+    end
+    return lines
+end
+
 local function current() return backend and backend.current() end
 local function close(restore)
     if not dialog then return end
@@ -14,26 +27,27 @@ local function close(restore)
     if vim.api.nvim_buf_is_valid(d.buf) then vim.api.nvim_buf_delete(d.buf, { force = true }) end
     if restore and d.restore then d.restore() end
 end
-local function redraw()
+local function redraw(row)
     if not dialog or not vim.api.nvim_win_is_valid(dialog.win) then return end
     local d, topic = dialog, dialog.topics[dialog.topic_index]
+    row = row or vim.api.nvim_win_get_cursor(d.win)[1]
     local focus = dialog.focus
     local lines = {
-        " Source: " .. tostring(d.request.source.harness) .. " / " .. tostring(d.request.source.session),
-        " Project: " .. tostring(d.request.source.project),
-        " Topic:   " .. (topic and ((topic.title or topic.id) .. " [" .. topic.id .. "]") or "<choose topic>"),
-        " Focus:   " .. (focus ~= "" and focus or "<optional; press Enter to edit>"),
-        " Notes model: " .. tostring(d.models.note or "<harness default>") .. " [m]",
-        " Brief model: " .. tostring(d.models.brief or "<harness default>") .. " [M]",
+        " Source: " .. single_line(d.request.source.harness) .. " / " .. single_line(d.request.source.session),
+        " Project: " .. single_line(d.request.source.project),
+        " Topic:   " .. (topic and (single_line(topic.title or topic.id) .. " [" .. single_line(topic.id) .. "]") or "<choose topic>"),
+        " Focus:   " .. single_line(focus ~= "" and focus or "<optional>") .. " [f]",
+        " Notes model: " .. single_line(d.models.note or "<harness default>") .. " [m]",
+        " Brief model: " .. single_line(d.models.brief or "<harness default>") .. " [M]",
         "", " [n] New topic", " [s] Save findings", " [b] Propose brief",
     }
-    if dialog.error then lines[#lines + 1] = " Error: " .. dialog.error end
+    if dialog.error then lines[#lines + 1] = " Error: " .. single_line(dialog.error) end
     lines[#lines + 1] = ""
     lines[#lines + 1] = " Tab/Shift-Tab or j/k navigate · Enter activate · Esc close"
     vim.bo[d.buf].modifiable = true
     vim.api.nvim_buf_set_lines(d.buf, 0, -1, false, lines)
     vim.bo[d.buf].modifiable = false
-    vim.api.nvim_win_set_cursor(d.win, { d.row, 0 })
+    vim.api.nvim_win_set_cursor(d.win, { math.min(row, #lines), 0 })
 end
 local function fail(message)
     dialog.error = tostring(message or "Capture failed")
@@ -81,7 +95,7 @@ function M.open(request, topics, on_change, restore, validate)
     local index = 1
     if request.topic_id then for i, t in ipairs(choices) do if t.id == request.topic_id then index = i end end end
     dialog = { buf = buf, win = win, request = vim.deepcopy(request), topics = choices,
-        topic_index = #choices > 0 and index or 0, focus = request.focus or "", row = 3,
+        topic_index = #choices > 0 and index or 0, focus = request.focus or "",
         models = {},
         restore = restore, on_change = on_change, validate = validate }
     for _, kind in ipairs({ "note", "brief" }) do
@@ -102,10 +116,21 @@ function M.open(request, topics, on_change, restore, validate)
     local function map(key, fn) vim.keymap.set("n", key, fn, { buffer = buf, nowait = true, silent = true }) end
     local navigable = { 3, 4, 5, 6, 8, 9, 10 }
     local function move(delta)
-        local index = 1
-        for i, row in ipairs(navigable) do if row == dialog.row then index = i end end
-        dialog.row = navigable[(index - 1 + delta) % #navigable + 1]
-        redraw()
+        local row = vim.api.nvim_win_get_cursor(dialog.win)[1]
+        if delta > 0 then
+            for _, target in ipairs(navigable) do if target > row then return redraw(target) end end
+            redraw(navigable[1])
+        else
+            for i = #navigable, 1, -1 do if navigable[i] < row then return redraw(navigable[i]) end end
+            redraw(navigable[#navigable])
+        end
+    end
+    local function edit_focus()
+        local d = dialog
+        vim.api.nvim_win_set_cursor(d.win, { 4, 0 })
+        vim.ui.input({ prompt = "Capture focus (optional): ", default = d.focus }, function(value)
+            if value ~= nil and dialog == d then d.focus = value; redraw(4) end
+        end)
     end
     local function new_topic()
         if not create_topic then return fail("Topic creation is unavailable") end
@@ -117,8 +142,8 @@ function M.open(request, topics, on_change, restore, validate)
             d.topics[#d.topics + 1] = vim.deepcopy(topic)
             table.sort(d.topics, function(a, b) return a.id < b.id end)
             for i, item in ipairs(d.topics) do if item.id == topic.id then d.topic_index = i end end
-            d.error, d.row = nil, 3
-            redraw()
+            d.error = nil
+            redraw(3)
             if d.on_change then d.on_change() end
         end)
     end
@@ -164,29 +189,29 @@ function M.open(request, topics, on_change, restore, validate)
         end)
     end
     local function activate()
-        if dialog.row == 3 then
-            if #dialog.topics == 0 then return fail("No topics available; press n to create one") end
-            vim.ui.select(dialog.topics, { prompt = "Capture destination topic", format_item = function(t) return t.title .. " (" .. t.id .. ")" end }, function(t)
-                if t and dialog then for i, item in ipairs(dialog.topics) do if item.id == t.id then dialog.topic_index = i end end; dialog.error = nil; redraw() end
+        local d = dialog
+        local row = vim.api.nvim_win_get_cursor(d.win)[1]
+        if row == 3 then
+            if #d.topics == 0 then return fail("No topics available; press n to create one") end
+            vim.ui.select(d.topics, { prompt = "Capture destination topic", format_item = function(t) return t.title .. " (" .. t.id .. ")" end }, function(t)
+                if t and dialog == d then for i, item in ipairs(d.topics) do if item.id == t.id then d.topic_index = i end end; d.error = nil; redraw() end
             end)
-        elseif dialog.row == 4 then
-            vim.ui.input({ prompt = "Capture focus (optional): ", default = dialog.focus }, function(value)
-                if value ~= nil and dialog then dialog.focus = value; redraw() end
-            end)
-        elseif dialog.row == 5 then choose_model("note")
-        elseif dialog.row == 6 then choose_model("brief")
-        elseif dialog.row == 8 then new_topic()
-        elseif dialog.row == 9 then submit("note")
-        elseif dialog.row == 10 then submit("brief") end
+        elseif row == 4 then edit_focus()
+        elseif row == 5 then choose_model("note")
+        elseif row == 6 then choose_model("brief")
+        elseif row == 8 then new_topic()
+        elseif row == 9 then submit("note")
+        elseif row == 10 then submit("brief") end
     end
     map("<Tab>", function() move(1) end); map("<S-Tab>", function() move(-1) end)
     map("j", function() move(1) end); map("k", function() move(-1) end)
     map("<CR>", activate); map("<Space>", activate)
+    map("f", edit_focus)
     map("n", new_topic)
     map("m", function() choose_model("note") end); map("M", function() choose_model("brief") end)
     map("s", function() submit("note") end); map("b", function() submit("brief") end)
     map("<Esc>", function() close(true) end); map("q", function() close(true) end)
-    redraw()
+    redraw(3)
     return win, buf
 end
 function M.action(action, on_change)
@@ -209,7 +234,8 @@ function M.action(action, on_change)
             "Save error: " .. tostring(job.error or "none"),
             "Helper cleanup error: " .. tostring(job.cleanup_error or "none"),
             "Saved path: " .. tostring(job.path or "none"),
-            "Recovery path: " .. tostring(job.recovery_path or "none"), "", "Press q or Esc to close" }
+             "Recovery path: " .. tostring(job.recovery_path or "none"), "", "Press q or Esc to close" }
+        lines = buffer_lines(lines)
         vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines); vim.bo[buf].modifiable = false
         local width, height = math.min(70, vim.o.columns - 6), math.min(#lines, vim.o.lines - 4)
         opening = true
@@ -256,10 +282,10 @@ function M.summary(slot_id, source_open)
         cleaning = "Cleaning up…", complete = req.kind == "brief" and "Brief proposed" or "Note saved",
         failed = "Capture failed", cancelled = "Capture cancelled" }
     local text = " ↳ " .. (labels[job.state] or tostring(job.state))
-    if req.focus and req.focus ~= "" then text = text .. " · " .. req.focus end
+    if req.focus and req.focus ~= "" then text = text .. " · " .. single_line(req.focus) end
     if job.cleanup_error then text = text .. " · cleanup pending" end
     if src.slot_id == slot_id then return text end
-    if slot_id == nil and not source_open then return " Orphan capture: " .. text .. " · source " .. tostring(src.session) end
+    if slot_id == nil and not source_open then return " Orphan capture: " .. text .. " · source " .. single_line(src.session) end
 end
 function M.source_slot() local job = current(); return job and job.request and job.request.source and job.request.source.slot_id end
 function M.row_items()

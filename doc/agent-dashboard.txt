@@ -92,6 +92,11 @@ row under the cursor. From an agent terminal, <C-h> focuses the sidebar in
 terminal or normal mode; <Tab> and <C-w>h also do so in normal mode. Terminal-mode
 <Tab> is passed through to the agent for completion.
 
+Recent sessions belong to Neovim's current working directory and refresh when
+the dashboard opens and every 30 seconds while visible. OpenCode V2 discovery
+queries by directory through opencode api rather than the repository's project
+identity; older releases fall back to opencode session list.
+
 ===============================================================================
 3. LUA API                                                  *agent-dashboard-api*
 
@@ -170,7 +175,9 @@ Each slot supports one topic. Attachments last for the current Neovim process.
 Capture requires an idle, reported Claude Code or OpenCode session. Press <M-c>
 in its agent terminal (default keys.capture; configurable), or use the dashboard
 capture action. Choose a topic, optional focus, and Save findings or Propose
-brief. In the capture popup, |n| (or Enter on New topic) prompts for a new topic
+brief. In the capture popup, |f| edits the optional focus text directly.
+Enter/Space activates the field under the cursor, including after arrow-key or
+mouse navigation. |n| (or Enter on New topic) prompts for a new topic
 ID: lowercase letters, numbers, and hyphens. It selects the new topic as the
 capture destination and associates it with the source session's project without
 changing the slot's attachment. Then |s| saves findings or |b| proposes a brief.
@@ -184,6 +191,10 @@ the source terminal and nothing is submitted there. Save findings writes a
 distinct note with project/session provenance. Propose brief is session-based,
 distinct from note consolidation, and must be reviewed and explicitly accepted
 or rejected. Capture is not run automatically after a turn.
+OpenCode V2 uses an authenticated private server and transient generation on a
+disposable fork, not an agent tool loop. Capture model selection changes only
+the helper, never the source conversation; V2 also supports #variant suffixes.
+Legacy V1 capture remains supported and requires curl.
 Notes have a short lead and a session-shaped body; briefs orient future sessions
 with durable facts, decisions, constraints, status, and pointers to details.
 

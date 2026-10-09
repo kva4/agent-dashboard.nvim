@@ -11,6 +11,7 @@ vim.api.nvim_create_autocmd("VimLeavePre", {
     callback = function() vim.fn.delete(topic_dir, "rf") end,
 })
 local started, allow, restored = nil, false, 0
+local start_error = "topic validation failed"
 local creations, created_source, changes = 0, nil, 0
 local accepted_topic, accept_calls, allow_accept = nil, 0, false
 local model_history = require("agent_dashboard.capture_model_history")
@@ -20,7 +21,7 @@ local model_defaults = { claude = { note = "sonnet", brief = "opus" },
 local job = { state = "failed", request = { kind = "note", topic_id = "alpha", source = { session = "session-a", slot_id = 1 } }, error = "deliberate" }
 ui.setup({
     start = function(request)
-        if not allow then return nil, "topic validation failed" end
+        if not allow then return nil, start_error end
         assert(model_history.remember(request.source.harness, request.kind, request.model))
         started = request; job.state = "capturing"; job.request = request; return job
     end,
@@ -64,29 +65,98 @@ assert(vim.api.nvim_win_get_cursor(win)[1] == 3)
 -- command line or agent channel is involved.
 local input_options
 local old_input = vim.ui.input
+local native_select = vim.ui.select
+local topic_pickers = 0
+vim.ui.select = function(_, _, callback) topic_pickers = topic_pickers + 1; callback(nil) end
 vim.ui.input = function(options, callback)
     input_options = options
     callback("verify recovery")
 end
-vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Tab>", true, false, true), "xt", false)
-vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
-vim.ui.input = old_input
+-- Native arrow/cursor movement must activate the actual field, not a stale row.
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Down><CR>", true, false, true), "xt", false)
+vim.ui.input, vim.ui.select = old_input, native_select
+assert(topic_pickers == 0, "Enter on Focus after native navigation must not open the topic picker")
 assert(input_options and input_options.prompt:find("Capture focus", 1, true))
 assert(ui._dialog().focus == "verify recovery" and vim.api.nvim_get_current_win() == win)
+
+local activated_models = {}
+vim.ui.select = function(items, options, callback)
+    activated_models[#activated_models + 1] = options.prompt
+    callback(items[1])
+end
+vim.api.nvim_win_set_cursor(win, { 5, 0 })
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
+vim.api.nvim_win_set_cursor(win, { 6, 0 })
+vim.api.nvim_feedkeys(" ", "xt", false)
+vim.api.nvim_win_set_cursor(win, { 7, 0 })
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
+vim.ui.select = native_select
+assert(#activated_models == 2 and activated_models[1]:find("Notes capture model", 1, true)
+    and activated_models[2]:find("Brief capture model", 1, true), "Enter/Space activates the model under the cursor")
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Tab>", true, false, true), "xt", false)
+assert(vim.api.nvim_win_get_cursor(win)[1] == 8, "Tab advances from the actual cursor, including blank rows")
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<S-Tab>", true, false, true), "xt", false)
+assert(vim.api.nvim_win_get_cursor(win)[1] == 6)
+vim.ui.input = function(options, callback)
+    assert(options.default == "verify recovery")
+    callback("focus via shortcut")
+end
+vim.api.nvim_feedkeys("f", "xt", false)
+vim.ui.input = old_input
+assert(ui._dialog().focus == "focus via shortcut" and vim.api.nvim_win_get_cursor(win)[1] == 4)
+assert(text():find("Focus:   focus via shortcut [f]", 1, true))
+for _, value in ipairs({ false, "", "verify recovery" }) do
+    vim.ui.input = function(options, callback)
+        assert(options.prompt:find("Capture focus", 1, true))
+        if value == false then callback(nil) else callback(value) end
+    end
+    vim.api.nvim_feedkeys("f", "xt", false)
+    vim.ui.input = old_input
+    assert(ui._dialog().focus == (value == false and "focus via shortcut" or value))
+end
+local multiline_focus = "first concern\nsecond concern\r\nthird concern"
+vim.ui.input = function(_, callback) callback(multiline_focus) end
+vim.api.nvim_feedkeys("f", "xt", false)
+vim.ui.input = old_input
+assert(ui._dialog().focus == multiline_focus, "focus text is preserved for the capture request")
+assert(text():find("Focus:   first concern second concern third concern [f]", 1, true))
+assert(vim.api.nvim_buf_get_lines(buf, 4, 5, false)[1]:find("Notes model:", 1, true),
+    "multiline focus display does not shift the interactive field rows")
+start_error = "topic validation failed\nDetails on a second line\r\nRetry after fixing the source"
 vim.api.nvim_win_set_cursor(win, { 9, 0 })
-vim.api.nvim_feedkeys("s", "xt", false)
+vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<CR>", true, false, true), "xt", false)
 assert(text():find("topic validation failed", 1, true) and vim.api.nvim_win_is_valid(win))
+assert(vim.api.nvim_win_get_cursor(win)[1] == 9, "redraw keeps the actual selected row")
+assert(text():find("Error: topic validation failed Details on a second line Retry after fixing the source", 1, true))
 allow = true
 vim.api.nvim_feedkeys("s", "xt", false)
 assert(started and started.kind == "note" and started.topic_id == "alpha")
 assert(started.model == "sonnet")
+assert(started.focus == multiline_focus)
 assert(not vim.api.nvim_win_is_valid(win) and restored == 1)
 assert(vim.deep_equal(ui.row_items(), { "cancel" }))
 assert(ui.action("cancel"))
 assert(ui.summary(1):find("Capturing findings", 1, true))
+assert(ui.summary(1):find("first concern second concern third concern", 1, true))
+assert(not ui.summary(1):find("[\r\n]"), "sidebar summaries stay on one buffer line")
 job.state = "failed"
 assert(vim.deep_equal(ui.row_items(), { "error", "open", "retry", "dismiss" }))
 assert(ui.action("retry"))
+-- Worker errors (for example CLI usage output) may contain many physical lines.
+local original_error = job.error
+job.error = "OpenCode server exited (1): DESCRIPTION\nStart the server\n\nERROR\nUnrecognized flag: --pure\n"
+job.cleanup_error = "Cleanup failed\r\nRetry cleanup\rMore detail"
+assert(ui.action("error"))
+local diagnostics_win, diagnostics_buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+local diagnostics = vim.api.nvim_buf_get_lines(diagnostics_buf, 0, -1, false)
+local diagnostics_text = table.concat(diagnostics, "\n")
+assert(diagnostics_text:find("Save error: " .. job.error, 1, true), "diagnostics retain the full multiline worker error")
+assert(diagnostics_text:find("Helper cleanup error: Cleanup failed\nRetry cleanup\nMore detail", 1, true))
+assert(#diagnostics > 12 and vim.api.nvim_win_get_height(diagnostics_win) <= vim.o.lines - 4)
+assert(not vim.bo[diagnostics_buf].modifiable and ui.owns_window(diagnostics_win))
+vim.api.nvim_feedkeys("q", "xt", false)
+assert(not vim.api.nvim_win_is_valid(diagnostics_win) and not ui.owns_window(diagnostics_win))
+job.error, job.cleanup_error = original_error, nil
 job.state = "complete"
 assert(vim.deep_equal(ui.row_items(), { "open", "dismiss" }))
 local ok, err = ui.action("accept")
@@ -122,7 +192,8 @@ assert(vim.deep_equal(ui._dialog().request, request), "topic creation leaves the
 assert(vim.deep_equal(created_source, request.source))
 assert(topic_source.get("gamma").projects[1] == "/source-project")
 assert(changes == 1 and vim.api.nvim_get_current_win() == win)
-vim.api.nvim_feedkeys("b", "xt", false)
+vim.api.nvim_win_set_cursor(win, { 10, 0 })
+vim.api.nvim_feedkeys(" ", "xt", false)
 assert(started.kind == "brief" and started.topic_id == "gamma" and started.focus == "keep this focus")
 assert(not vim.api.nvim_win_is_valid(win) and restored == 2)
 ok, err = ui.action("accept")
@@ -171,6 +242,19 @@ pending_input("stale-topic")
 assert(topic_source.get("stale-topic") == nil and #ui._dialog().topics == 0)
 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "xt", false)
 assert(restored == 5)
+
+-- A delayed focus input cannot overwrite the focus in a newly opened popup.
+win = ui.open(request, topic_source.list())
+local pending_focus
+vim.ui.input = function(_, callback) pending_focus = callback end
+vim.api.nvim_feedkeys("f", "xt", false)
+vim.ui.input = old_input
+assert(type(pending_focus) == "function")
+vim.api.nvim_feedkeys("q", "xt", false)
+win = ui.open(request, topic_source.list())
+pending_focus("stale focus")
+assert(ui._dialog().focus == request.focus)
+vim.api.nvim_feedkeys("q", "xt", false)
 
 -- Selecting a model is scoped to the chosen action and remembered only on submit.
 request = { kind = "note", topic_id = "alpha", focus = "keep the focus",
