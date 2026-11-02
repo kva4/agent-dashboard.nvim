@@ -74,6 +74,8 @@ dashboard.setup({
     height = 0.78, -- fraction of the available editor height
     tmux = true,
     notifications = { enabled = true, macos = false },
+    restore = "session", -- "session", "manual", or false
+    -- slots_dir = vim.fn.stdpath("state") .. "/agent-dashboard/slots",
     -- claude_projects = vim.fn.expand("~/.claude/projects"),
     keys = {
         list = "<C-h>", next = "<M-j>", previous = "<M-k>",
@@ -111,7 +113,7 @@ Neovim's current working directory are shown. Recent sessions refresh when the
 dashboard opens and every 30 seconds while visible.
 
 The status symbols are `!` blocked, `●` working, `○` idle, `✓` unseen completed
-turn, and `?` unknown. Status reports are optional; without one, the terminal
+turn, `?` unknown, and `↻` restored but not resumed yet. Status reports are optional; without one, the terminal
 still works and shows `shell`.
 
 Hidden slots notify with `vim.notify` when they become blocked or finish a turn.
@@ -120,9 +122,24 @@ Set `notifications = false` to disable notifications, or use
 `require("agent_dashboard").status()` returns the same badge used by tmux and can
 be included in a statusline.
 
+## Restoring slots
+
+The dashboard remembers which Claude Code and OpenCode sessions are open in each
+slot, under `slots_dir`. Slots are saved for the loaded Neovim session file
+(`v:this_session`), or for the working directory when no session is loaded. With the default
+`restore = "session"`, loading a Neovim session (`nvim -S`, for example from
+tmux-resurrect) recreates those slots. Each restored slot shows `↻` and resumes
+its session with `claude --resume` or `opencode --session` the first time you
+open it, so no agents start in the background.
+
+Use `restore = "manual"` to restore only with `:AgentDashboard restore`, or
+`restore = false` to stop saving slots. A saved slot is kept when its agent
+exits and is forgotten when you remove the slot. Two Neovim instances using the
+same session or directory share one saved list, and the last one to change wins.
+
 ## Commands and editor context
 
-`:AgentDashboard` toggles the dashboard. Subcommands include `open N`, `add`,
+`:AgentDashboard` toggles the dashboard. Subcommands include `open N`, `add`, `restore`,
 `send [selection|file|location]`, and `hooks`. The hooks command prints a
 ready-to-paste Claude Code hooks object using the installed reporter path.
 
@@ -196,6 +213,7 @@ outside a dashboard terminal. Restart Claude Code after changing its hooks.
 
 ```sh
 nvim --headless -u NONE -i NONE -l tests/agent_dashboard.lua
+nvim --headless -u NONE -i NONE -l tests/restore.lua
 node --check extras/opencode/agent-dashboard-tui.js
 bash -n extras/claude/agent-dashboard-report.sh
 ```

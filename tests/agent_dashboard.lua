@@ -241,7 +241,7 @@ package.loaded["agent_dashboard.sessions"] = {
     end,
 }
 local dashboard = require("agent_dashboard")
-dashboard.setup({ tmux = false, keys = { next = "<M-n>" } })
+dashboard.setup({ tmux = false, restore = false, keys = { next = "<M-n>" } })
 local original_executable = vim.fn.executable
 vim.fn.executable = function(name)
     if name == "claude" or name == "opencode" then return 1 end
