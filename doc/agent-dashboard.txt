@@ -40,6 +40,7 @@ See the project README for lazy.nvim setup and Claude/OpenCode reporter setup.
 :AgentDashboard [toggle]         Toggle the dashboard.
 :AgentDashboard open {N}         Open terminal slot N.
 :AgentDashboard add              Create a terminal slot.
+:AgentDashboard restore          Recreate slots saved for this directory.
 :AgentDashboard send [kind]      Send selection, file, or location context.
 :AgentDashboard hooks            Print a Claude Code hooks JSON snippet.
 :AgentDashboard topic [action]   Create, open, attach, or export a topic.

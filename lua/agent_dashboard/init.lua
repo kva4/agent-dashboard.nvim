@@ -5,6 +5,7 @@ local topic_source = require("agent_dashboard.topics")
 local prompts = require("agent_dashboard.prompts")
 local capture = require("agent_dashboard.capture")
 local capture_ui = require("agent_dashboard.capture_ui")
+local slot_store = require("agent_dashboard.slots")
 
 local slots = {}
 local terminals = {}
@@ -18,8 +19,14 @@ local refresh_at, refresh_pending, refresh_generation = 0, false, 0
 local next_id = 100
 local selected, list_buf, list_win, terminal_win, origin_win, timer, state_dir
 local changing = false
+local saved = {}
+local deliver_opencode_topic
+local resume_commands = { claude = "claude --resume ", opencode = "opencode --session " }
 local config = {
     recent_limit = 10,
+    -- "session": resume saved slots when an nvim session loads; "manual": only
+    -- via :AgentDashboard restore; false: don't remember slots at all.
+    restore = "session",
     height = 0.78,
     tmux = true,
     capture_models = {
@@ -149,7 +156,9 @@ end
 
 local function status(id)
     local term = terminals[id]
-    if not term or not term.bufnr or not vim.api.nvim_buf_is_valid(term.bufnr) then return "empty" end
+    if not term or not term.bufnr or not vim.api.nvim_buf_is_valid(term.bufnr) then
+        return term and term.restore and "restored" or "empty"
+    end
     if term.exited then return "exited" end
     local entry = states[id]
     if not entry then return "shell" end
@@ -166,6 +175,7 @@ local status_symbols = {
     working = "●",
     idle = "○",
     unknown = "?",
+    restored = "↻",
 }
 
 local function badge()
@@ -339,6 +349,38 @@ local function refresh_sessions()
     end, config)
 end
 
+-- Slots belong to the loaded nvim session when there is one, so they come
+-- back with it; otherwise to the current directory.
+local function slots_key()
+    return vim.v.this_session ~= "" and vim.v.this_session or vim.fn.getcwd()
+end
+
+local function save_slots()
+    if not config.restore then return end
+    local entries = {}
+    for _, id in ipairs(slots) do
+        if saved[id] then entries[#entries + 1] = saved[id] end
+    end
+    slot_store.save(slots_key(), entries)
+end
+
+-- Saved entries survive the agent exiting, so a shutdown that kills agents
+-- before nvim doesn't wipe them; removing the slot forgets it.
+local function remember(id)
+    local term = terminals[id]
+    if not term then return end
+    local entry = { agent = term.agent, session = term.session_id, cwd = term.cwd,
+        topic = term.topic_id, title = term.title }
+    if not slot_store.valid(entry) then return end
+    saved[id] = entry
+    save_slots()
+end
+
+local function forget(id)
+    saved[id] = nil
+    save_slots()
+end
+
 local function mark_seen(id)
     local entry = states[id]
     if entry and entry.state == "idle" and not entry.seen then
@@ -436,6 +478,17 @@ local function open_slot(id, command, session)
     changing = true
     selected = id
     local term = terminals[id]
+    -- A restored slot resumes its saved session the first time it's opened.
+    local restored = not command and not session and term.restore
+    if restored then
+        term.restore = nil
+        session = { id = term.session_id, harness = term.agent, title = term.title, project = term.cwd }
+        if vim.fn.executable(session.harness) == 1 then
+            command = resume_commands[session.harness] .. vim.fn.shellescape(session.id)
+        else
+            vim.notify(session.harness .. " is not available on PATH", vim.log.levels.WARN)
+        end
+    end
     local old_cwd = term.cwd or vim.fn.getcwd()
     local requested_cwd = session and vim.fn.fnamemodify(vim.fn.expand(
         session.project and session.project ~= "" and session.project or vim.fn.getcwd()), ":p")
@@ -473,6 +526,7 @@ local function open_slot(id, command, session)
     end
     if spawn then
         start_terminal(id, command)
+        if restored and session.harness == "opencode" then deliver_opencode_topic(id, term) end
     elseif command then
         term.claimed = true
         states[id] = nil
@@ -486,7 +540,7 @@ local function open_slot(id, command, session)
     vim.cmd("startinsert")
 end
 
-local function deliver_opencode_topic(id, term)
+function deliver_opencode_topic(id, term)
     local topic = config.topics.enabled and config.topics.deliver ~= false and term.topic_id
         and topic_source.get(term.topic_id)
     if not topic then return end
@@ -547,7 +601,7 @@ local function open_session(session)
         vim.notify("Agent dashboard slot limit reached", vim.log.levels.WARN)
         return
     end
-    local command = ({ claude = "claude --resume ", opencode = "opencode --session " })[session.harness]
+    local command = resume_commands[session.harness]
     if not command then
         vim.notify("No resume command configured for " .. tostring(session.harness), vim.log.levels.WARN)
         return
@@ -556,6 +610,7 @@ local function open_session(session)
     local term = terminals[id]
     open_slot(id, command .. vim.fn.shellescape(session.id), session)
     if session.harness == "opencode" then deliver_opencode_topic(id, term) end
+    remember(id)
 end
 
 function M.focus_list()
@@ -760,6 +815,7 @@ function M.attach_topic(index, id)
     if vim.fn.rename(temporary, path) ~= 0 then return nil, "Could not update slot attachment" end
     terminals[slot].topic_id = id
     terminals[slot].pending_topic = nil
+    remember(slot)
     render()
     return true
 end
@@ -1000,6 +1056,7 @@ local function remove_slot()
         vim.api.nvim_buf_delete(term.bufnr, { force = true })
     end
     table.remove(slots, index)
+    forget(id)
     vim.fn.delete(state_dir .. "/" .. id .. ".topic")
     if selected == id then selected = slots[math.min(index, #slots)] end
     open_slot(selected)
@@ -1311,6 +1368,7 @@ local function poll()
                             .. " attached; run :AgentDashboard distill to capture findings",
                             vim.log.levels.INFO, { title = "Agent Dashboard" })
                     end
+                    remember(id)
                     render()
                 end
             elseif dead_report or (entry and not ignored_report) then
@@ -1325,6 +1383,39 @@ local function poll()
             render()
         end
     end
+end
+
+-- Recreates the slots saved for the current project. Each one resumes its
+-- session when first opened. Returns how many slots were added.
+function M.restore()
+    local added = 0
+    local entries = slot_store.load(slots_key())
+    if #entries == 0 and vim.v.this_session ~= "" then entries = slot_store.load(vim.fn.getcwd()) end
+    for _, entry in ipairs(entries) do
+        local open = false
+        for _, id in ipairs(slots) do
+            local term = terminals[id]
+            if term.session_id == entry.session and term.agent == entry.agent then open = true end
+        end
+        if not open and next_id < 9999 then
+            local id = create_slot()
+            local term = terminals[id]
+            term.restore = true
+            term.session_id, term.agent = entry.session, entry.agent
+            term.title = type(entry.title) == "string" and entry.title or nil
+            term.cwd = type(entry.cwd) == "string" and vim.fn.isdirectory(entry.cwd) == 1 and entry.cwd or nil
+            saved[id] = entry
+            if config.topics.enabled and type(entry.topic) == "string" and topic_source.get(entry.topic) then
+                M.attach_topic(#slots, entry.topic)
+            end
+            added = added + 1
+        end
+    end
+    if added > 0 then
+        selected = slots[#slots - added + 1]
+        render()
+    end
+    return added
 end
 
 local function handle_topic_command(args)
@@ -1444,6 +1535,10 @@ function M.setup(opts)
     state_dir = vim.fn.stdpath("state") .. "/agent-dashboard/" .. vim.fn.getpid() .. "-"
         .. string.format("%d", vim.uv.hrtime())
     vim.fn.mkdir(state_dir, "p", 448)
+    slot_store.setup(config.restore and (config.slots_dir or (vim.fn.stdpath("state") .. "/agent-dashboard/slots")) or nil)
+    if config.restore == "session" then
+        vim.api.nvim_create_autocmd("SessionLoadPost", { callback = function() M.restore() end })
+    end
     if config.tmux then tmux.setup(state_dir) end
     timer = vim.uv.new_timer()
     timer:start(0, 1000, vim.schedule_wrap(poll))
@@ -1469,6 +1564,10 @@ function M.setup(opts)
             end
         elseif action == "add" then
             add_slot()
+        elseif action == "restore" then
+            local added = M.restore()
+            vim.notify(added > 0 and ("Restored " .. added .. " agent slot" .. (added == 1 and "" or "s"))
+                or "No saved agent slots for this project", vim.log.levels.INFO)
         elseif action == "send" then
             local line_range = command.range > 0 and { command.line1, command.line2 } or nil
             M.send_context(args[2] or "selection", line_range)
@@ -1488,7 +1587,7 @@ function M.setup(opts)
         elseif action == "hooks" then
             vim.api.nvim_echo({ { M.hooks() } }, true, {})
         else
-            vim.notify("Usage: AgentDashboard [toggle|open N|add|send|topic|note|distill|brief|consolidate|skills|hooks]",
+            vim.notify("Usage: AgentDashboard [toggle|open N|add|restore|send|topic|note|distill|brief|consolidate|skills|hooks]",
                 vim.log.levels.WARN)
         end
     end, { nargs = "*", range = true, desc = "Control the agent dashboard" })

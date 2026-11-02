@@ -25,7 +25,7 @@ capture.setup = function(options)
     assert(options.models.brief.opencode == "openai/brief-model" and options.models.brief.claude == nil)
     return original_capture_setup(options)
 end
-dashboard.setup({ tmux = false, capture_dir = topic_dir .. "/capture-journal", capture_models = {
+dashboard.setup({ tmux = false, restore = false, capture_dir = topic_dir .. "/capture-journal", capture_models = {
     note = { claude = "note-claude" }, brief = { opencode = "openai/brief-model" },
 }, topics = {
     dir = topic_dir,

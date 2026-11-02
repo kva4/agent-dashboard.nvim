@@ -65,14 +65,15 @@ function M.start(request, prompt, ownership_callback, done)
     local ok, owned = pcall(ownership_callback, helper)
     if not ok or owned == false then return nil, "Could not persist Claude helper ownership" end
     local stdout, stderr, finished = {}, {}, false
+    -- stdin = "null": an open, never-written pipe makes `claude -p` wait 3s and warn on stderr.
     local process = vim.fn.jobstart(command, { cwd = request.source.project, env = env,
-        clear_env = true, stdout_buffered = true, stderr_buffered = true,
+        clear_env = true, stdin = "null", stdout_buffered = true, stderr_buffered = true,
         on_stdout = function(_, data) stdout = data or {} end,
         on_stderr = function(_, data) stderr = data or {} end,
         on_exit = function(_, code)
             if finished then return end
             finished = true
-            if code ~= 0 then done(nil, vim.trim(table.concat(stderr, "\n")))
+            if code ~= 0 then done(nil, M.failure(code, table.concat(stdout, "\n"), table.concat(stderr, "\n")))
             else
                 local result, err = M.parse(table.concat(stdout, "\n"), helper)
                 done(result, err)
@@ -93,12 +94,30 @@ function M.cancel(handle, callback)
     wait()
 end
 
+-- `claude -p --output-format json` reports API failures (refusals, rate limits,
+-- auth errors) as a JSON result on stdout and exits non-zero, so stderr alone
+-- usually holds only unrelated warnings.
+local function reported_error(obj)
+    if type(obj) == "table" and obj.is_error == true and type(obj.result) == "string" and obj.result:match("%S") then
+        return vim.trim(obj.result)
+    end
+end
+
+function M.failure(code, stdout, stderr)
+    local ok, obj = pcall(vim.json.decode, stdout or "")
+    local reported = ok and reported_error(obj)
+    if reported then return reported end
+    local text = vim.trim(stderr or "")
+    if text ~= "" then return text end
+    return "Claude exited with code " .. tostring(code)
+end
+
 function M.parse(stdout, expected_id)
     local ok, obj = pcall(vim.json.decode, stdout)
     if not ok or type(obj) ~= "table" then return nil, "Claude returned invalid capture JSON" end
     if obj.session_id ~= expected_id then return nil, "Claude helper session id did not match its assigned id" end
     if obj.is_error == true or (obj.subtype ~= nil and obj.subtype ~= "success") then
-        return nil, "Claude reported capture failure: " .. tostring(obj.subtype or "is_error")
+        return nil, reported_error(obj) or ("Claude reported capture failure: " .. tostring(obj.subtype or "is_error"))
     end
     if type(obj.result) ~= "string" or not obj.result:match("%S") then return nil, "Claude returned an empty capture" end
     return { helper_id = obj.session_id, text = obj.result }

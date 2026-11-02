@@ -44,7 +44,7 @@ vim.api.nvim_get_proc_children = function() return {} end
 vim.api.nvim_chan_send = function(_, text) sent[#sent + 1] = text end
 local dashboard = require("agent_dashboard")
 local prompt_templates = {}
-dashboard.setup({ tmux = false, topics = { dir = topics.directory(), brief_max_lines = 43,
+dashboard.setup({ tmux = false, restore = false, topics = { dir = topics.directory(), brief_max_lines = 43,
     opencode_prompt_timeout_ms = 2200, prompts = prompt_templates },
     capture_dir = root .. "/capture" })
 dashboard.toggle()

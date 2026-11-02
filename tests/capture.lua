@@ -305,11 +305,38 @@ do
     assert(args == nil and opts == nil)
     local id = assert(claude.prepare(claude_request, capture_id))
     vim.fn.jobstart = function(argv, jobopts) args, opts = argv, jobopts; return 41 end
-    local handle = assert(claude.start(claude_request, "safe", function(got) return got == id end, function() end))
+    local done_result, done_err
+    local handle = assert(claude.start(claude_request, "safe", function(got) return got == id end,
+        function(result, err) done_result, done_err = result, err end))
     vim.fn.jobstart = previous
     vim.fn.jobpid = previous_jobpid
     assert(handle.process == 41 and opts.clear_env == true)
     assert(opts.env.NVIM_AGENT_TOPIC == nil and opts.env.NVIM_AGENT_DASHBOARD_DIR == nil)
+    -- An open stdin pipe makes `claude -p` wait 3s and warn; the worker needs no input.
+    assert(opts.stdin == "null", "worker stdin must be closed")
+
+    -- A non-zero exit reports the JSON error from stdout, not unrelated stderr noise.
+    local refusal = vim.json.encode({ type = "result", subtype = "success", is_error = true,
+        session_id = id, result = "API Error: safeguards flagged this session" })
+    opts.on_stdout(41, { refusal })
+    opts.on_stderr(41, { "Warning: unrelated stderr noise" })
+    opts.on_exit(41, 1)
+    assert(done_result == nil and done_err == "API Error: safeguards flagged this session", tostring(done_err))
+end
+
+-- Failure reporting falls back from stdout JSON to stderr to the exit code.
+do
+    assert(claude.failure(1, vim.json.encode({ is_error = true, result = " API Error: refused \n" }), "noise")
+        == "API Error: refused")
+    assert(claude.failure(1, "not json", " claude: boom \n") == "claude: boom")
+    assert(claude.failure(1, vim.json.encode({ is_error = false, result = "fine" }), "stderr text") == "stderr text")
+    assert(claude.failure(2, "", "") == "Claude exited with code 2")
+    local helper = assert(claude.prepare(claude_request, capture_id))
+    local _, parse_err = claude.parse(vim.json.encode({ session_id = helper, is_error = true,
+        subtype = "success", result = "API Error: refused" }), helper)
+    assert(parse_err == "API Error: refused", tostring(parse_err))
+    local _, bare_err = claude.parse(vim.json.encode({ session_id = helper, is_error = true }), helper)
+    assert(bare_err == "Claude reported capture failure: is_error", tostring(bare_err))
 end
 
 -- Frozen request and topic metadata must not follow caller-side mutation.
